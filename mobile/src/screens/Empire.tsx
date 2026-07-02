@@ -1,4 +1,5 @@
 import { Layers } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Screen } from "../components/Screen";
 import { Card } from "../components/Card";
 import { Pill } from "../components/Pill";
@@ -27,12 +28,17 @@ function EmpireGroup({ empire }: { empire: EmpireSummary }) {
       ) : (
         <ul className="mt-4 flex flex-col gap-2 border-t border-hairline pt-3">
           {(accounts.data ?? []).map((account) => (
-            <li key={account.account_id} className="flex items-center justify-between text-sm">
-              <span className="flex items-center gap-2 text-ink-soft">
-                {account.account_type}
-                <Pill tone={account.status === "ACTIVE" ? "positive" : "neutral"}>{account.status}</Pill>
-              </span>
-              <span className="font-semibold text-ink">{formatMoney(account.balance)}</span>
+            <li key={account.account_id}>
+              <Link
+                to={`/empire/${account.account_id}`}
+                className="flex items-center justify-between text-sm active:opacity-70"
+              >
+                <span className="flex items-center gap-2 text-ink-soft">
+                  {account.account_type}
+                  <Pill tone={account.status === "ACTIVE" ? "positive" : "neutral"}>{account.status}</Pill>
+                </span>
+                <span className="font-semibold text-ink">{formatMoney(account.balance)}</span>
+              </Link>
             </li>
           ))}
         </ul>
@@ -78,14 +84,19 @@ export function Empire() {
               <p className="text-sm font-semibold text-ink-soft">Standalone</p>
               <ul className="mt-3 flex flex-col gap-2.5">
                 {standalone_accounts.map((account) => (
-                  <li key={account.account_id} className="flex items-center justify-between">
-                    <span className="flex items-center gap-2 text-sm text-ink-soft">
-                      {account.account_type}
-                      <Pill tone={account.status === "ACTIVE" ? "positive" : "neutral"}>
-                        {account.status}
-                      </Pill>
-                    </span>
-                    <span className="font-semibold text-ink">{formatMoney(account.balance)}</span>
+                  <li key={account.account_id}>
+                    <Link
+                      to={`/empire/${account.account_id}`}
+                      className="flex items-center justify-between active:opacity-70"
+                    >
+                      <span className="flex items-center gap-2 text-sm text-ink-soft">
+                        {account.account_type}
+                        <Pill tone={account.status === "ACTIVE" ? "positive" : "neutral"}>
+                          {account.status}
+                        </Pill>
+                      </span>
+                      <span className="font-semibold text-ink">{formatMoney(account.balance)}</span>
+                    </Link>
                   </li>
                 ))}
               </ul>

@@ -27,6 +27,7 @@ class WeeklyReport(AggregateRoot):
         self.status: str | None = None
         self.content_ref: str | None = None
         self.published_at: datetime | None = None
+        self.summary: str | None = None
 
     @classmethod
     def generate(
@@ -37,6 +38,7 @@ class WeeklyReport(AggregateRoot):
         period_start: date,
         period_end: date,
         content_ref: str,
+        summary: str | None = None,
         source: str,
         correlation_id: uuid.UUID,
     ) -> "WeeklyReport":
@@ -53,6 +55,7 @@ class WeeklyReport(AggregateRoot):
                 "period_start": period_start.isoformat(),
                 "period_end": period_end.isoformat(),
                 "content_ref": content_ref,
+                "summary": summary,
             },
             source=source,
             correlation_id=correlation_id,
@@ -77,6 +80,7 @@ class WeeklyReport(AggregateRoot):
             self.period_start = date.fromisoformat(event.payload["period_start"])
             self.period_end = date.fromisoformat(event.payload["period_end"])
             self.content_ref = event.payload["content_ref"]
+            self.summary = event.payload.get("summary")
             self.status = "GENERATED"
         elif event.event_type == events.WEEKLY_REPORT_PUBLISHED:
             self.published_at = datetime.fromisoformat(event.payload["published_at"])

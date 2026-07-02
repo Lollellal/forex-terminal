@@ -40,6 +40,23 @@ export interface PortfolioResponse {
   recent_journal_entries: RecentJournalEntry[];
 }
 
+// Unveränderlicher Signal-Snapshot, eingefroren beim Desktop-Cloud-Publish
+// (siehe src/trade_snapshot.py). Felder ohne echte Quelle sind null, nicht
+// erfunden -- so rendern, dass null ehrlich als "nicht verfügbar" erscheint.
+export interface SignalSnapshot {
+  ml_score: number | null;
+  quality: string | null;
+  edge: string | null;
+  alignment: string | null;
+  combo_key: string | null;
+  regime: string | null;
+  overall_score: number | null;
+  seasonality_score: number | null;
+  primary_drivers: string[] | null;
+  weekly_report_id: string | null;
+  report_week: string | null;
+}
+
 export interface AllocationOverviewResponse {
   allocation_id: string;
   account_id: string;
@@ -48,9 +65,11 @@ export interface AllocationOverviewResponse {
   status: AllocationStatus;
   planned_risk_pct: string;
   applied_risk_pct: string | null;
+  opened_at: string | null;
   closed_at: string | null;
   close_reason: CloseReason | null;
   realized_r: string | null;
+  signal_snapshot: SignalSnapshot | null;
 }
 
 export interface JournalNoteEntry {
@@ -100,10 +119,18 @@ export interface WeeklyReportResponse {
   period_end: string;
   status: "DRAFT" | "GENERATED" | "PUBLISHED" | "ARCHIVED";
   content_ref: string | null;
+  summary: string | null;
   published_at: string | null;
 }
 
 export interface WeeklyReportDownloadUrlResponse {
   url: string;
   expires_in: number;
+}
+
+export interface MarketSnapshotResponse {
+  regime: string;
+  vix: string | null;
+  yield_curve: string | null;
+  updated_at: string;
 }

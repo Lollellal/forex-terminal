@@ -3,8 +3,10 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { BottomNav } from "./components/BottomNav";
 import { Home } from "./screens/Home";
 import { ActiveTrades } from "./screens/ActiveTrades";
+import { TradeDetail } from "./screens/TradeDetail";
 import { Journal } from "./screens/Journal";
 import { Empire } from "./screens/Empire";
+import { AccountDetail } from "./screens/AccountDetail";
 import { WeeklyReports } from "./screens/WeeklyReports";
 
 const queryClient = new QueryClient({
@@ -23,8 +25,10 @@ function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/trades" element={<ActiveTrades />} />
+          <Route path="/trades/:allocationId" element={<TradeDetail />} />
           <Route path="/journal" element={<Journal />} />
           <Route path="/empire" element={<Empire />} />
+          <Route path="/empire/:accountId" element={<AccountDetail />} />
           <Route path="/reports" element={<WeeklyReports />} />
         </Routes>
         <BottomNav />

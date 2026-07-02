@@ -55,6 +55,7 @@ def create_allocation(payload: CreateAllocationRequest, conn: Connection = Depen
             entry_price_planned=payload.entry_price_planned,
             sl_price=payload.sl_price,
             tp_price=payload.tp_price,
+            signal_snapshot=payload.signal_snapshot,
         ),
     )
     _projections.catch_up(conn)
@@ -150,5 +151,6 @@ def _to_response(allocation) -> AllocationResponse:
         applied_risk_pct=allocation.applied_risk_pct,
         close_reason=allocation.close_reason,
         realized_r=allocation.realized_r,
+        signal_snapshot=allocation.signal_snapshot,
         version=allocation.version,
     )

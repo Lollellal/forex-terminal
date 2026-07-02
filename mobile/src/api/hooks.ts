@@ -6,6 +6,7 @@ import type {
   EmpireOverviewResponse,
   AccountBalanceProjectionResponse,
   JournalViewResponse,
+  MarketSnapshotResponse,
   PortfolioResponse,
   WeeklyReportDownloadUrlResponse,
   WeeklyReportResponse,
@@ -30,10 +31,43 @@ export function useActiveTrades() {
   });
 }
 
+export function useAllocationDetail(allocationId: string | undefined) {
+  return useQuery({
+    queryKey: ["allocation", allocationId],
+    queryFn: () => get<AllocationOverviewResponse>(`/allocations/${allocationId}`),
+    enabled: Boolean(allocationId),
+  });
+}
+
+export function useAccountAllocations(accountId: string | undefined) {
+  return useQuery({
+    queryKey: ["allocations", "account", accountId],
+    queryFn: () => get<AllocationOverviewResponse[]>(`/allocations?account_id=${accountId}`),
+    enabled: Boolean(accountId),
+  });
+}
+
+export function useMarketSnapshot() {
+  return useQuery({
+    queryKey: ["market-snapshot"],
+    queryFn: () => get<MarketSnapshotResponse>(`/market-snapshot`),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
 export function useJournal() {
   return useQuery({
     queryKey: ["journal", CURRENT_USER_ID],
     queryFn: () => get<JournalViewResponse[]>(`/journal?user_id=${CURRENT_USER_ID}`),
+  });
+}
+
+export function useJournalEntry(allocationId: string | undefined) {
+  return useQuery({
+    queryKey: ["journal", "allocation", allocationId],
+    queryFn: () => get<JournalViewResponse>(`/journal/${allocationId}`),
+    enabled: Boolean(allocationId),
   });
 }
 
@@ -42,6 +76,14 @@ export function useEmpireAccounts(empireId: string | undefined) {
     queryKey: ["empire-accounts", empireId],
     queryFn: () => get<AccountBalanceProjectionResponse[]>(`/empires/${empireId}/accounts`),
     enabled: Boolean(empireId),
+  });
+}
+
+export function useAccount(accountId: string | undefined) {
+  return useQuery({
+    queryKey: ["account", accountId],
+    queryFn: () => get<AccountBalanceProjectionResponse>(`/accounts/${accountId}/balance`),
+    enabled: Boolean(accountId),
   });
 }
 

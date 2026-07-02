@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import uuid
 
+import json
+
 from sqlalchemy import Connection, text
 
 from backend.domain.shared.event_envelope import EventEnvelope
@@ -18,11 +20,12 @@ _UPSERT_SQL = text(
     INSERT INTO core.trade_allocations
         (id, account_id, signal_id, pair, direction, status, planned_risk_pct,
          applied_risk_pct, entry_price_planned, sl_price, tp_price,
-         opened_at, closed_at, close_reason, realized_r, version, updated_at)
+         opened_at, closed_at, close_reason, realized_r, signal_snapshot, version, updated_at)
     VALUES
         (:id, :account_id, :signal_id, :pair, :direction, :status, :planned_risk_pct,
          :applied_risk_pct, :entry_price_planned, :sl_price, :tp_price,
-         :opened_at, :closed_at, :close_reason, :realized_r, :version, now())
+         :opened_at, :closed_at, :close_reason, :realized_r,
+         CAST(:signal_snapshot AS jsonb), :version, now())
     ON CONFLICT (id) DO UPDATE SET
         status               = EXCLUDED.status,
         applied_risk_pct     = EXCLUDED.applied_risk_pct,
@@ -68,6 +71,7 @@ class AllocationRepository(EventSourcedRepository[TradeAllocation]):
                     "closed_at": aggregate.closed_at,
                     "close_reason": aggregate.close_reason,
                     "realized_r": aggregate.realized_r,
+                    "signal_snapshot": json.dumps(aggregate.signal_snapshot),
                     "version": aggregate.version,
                 },
             )

@@ -15,6 +15,7 @@ class WeeklyReportResponse(BaseModel):
     period_end: date
     status: str
     content_ref: str | None
+    summary: str | None = None
     published_at: datetime | None
 
 

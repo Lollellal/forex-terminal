@@ -41,6 +41,7 @@ class AllocationLifecycleService:
             entry_price_planned=command.entry_price_planned,
             sl_price=command.sl_price,
             tp_price=command.tp_price,
+            signal_snapshot=command.signal_snapshot,
             source=command.source,
             correlation_id=command.correlation_id,
         )

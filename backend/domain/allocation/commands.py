@@ -22,6 +22,7 @@ class CreateAllocationCommand(Command):
     entry_price_planned: Decimal | None = None
     sl_price: Decimal | None = None
     tp_price: Decimal | None = None
+    signal_snapshot: dict | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

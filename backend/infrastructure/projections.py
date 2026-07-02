@@ -177,15 +177,17 @@ class AllocationOverviewProjection:
     _INSERT_SQL = text(
         """
         INSERT INTO projections.allocation_overview
-            (allocation_id, account_id, pair, direction, status, planned_risk_pct, updated_at)
+            (allocation_id, account_id, pair, direction, status, planned_risk_pct, signal_snapshot, updated_at)
         VALUES
-            (:allocation_id, :account_id, :pair, :direction, 'CREATED', :planned_risk_pct, now())
+            (:allocation_id, :account_id, :pair, :direction, 'CREATED', :planned_risk_pct,
+             CAST(:signal_snapshot AS jsonb), now())
         ON CONFLICT (allocation_id) DO UPDATE SET
             account_id       = EXCLUDED.account_id,
             pair             = EXCLUDED.pair,
             direction        = EXCLUDED.direction,
             status           = EXCLUDED.status,
             planned_risk_pct = EXCLUDED.planned_risk_pct,
+            signal_snapshot  = EXCLUDED.signal_snapshot,
             updated_at       = now()
         """
     )
@@ -199,7 +201,7 @@ class AllocationOverviewProjection:
     _OPENED_SQL = text(
         """
         UPDATE projections.allocation_overview
-        SET status = 'OPEN', applied_risk_pct = :applied_risk_pct, updated_at = now()
+        SET status = 'OPEN', applied_risk_pct = :applied_risk_pct, opened_at = :opened_at, updated_at = now()
         WHERE allocation_id = :allocation_id
         """
     )
@@ -231,6 +233,7 @@ class AllocationOverviewProjection:
                     "pair": event.payload["pair"],
                     "direction": event.payload["direction"],
                     "planned_risk_pct": event.payload["planned_risk_pct"],
+                    "signal_snapshot": json.dumps(event.payload.get("signal_snapshot")),
                 },
             )
         elif event.event_type == allocation_events.ALLOCATION_CONFIRMED:
@@ -247,6 +250,7 @@ class AllocationOverviewProjection:
                 {
                     "allocation_id": allocation_id,
                     "applied_risk_pct": event.payload["applied_risk_pct"],
+                    "opened_at": event.payload["opened_at"],
                 },
             )
         elif event.event_type == allocation_events.ALLOCATION_CLOSED:
@@ -439,15 +443,16 @@ class WeeklyReportProjection:
     _INSERT_SQL = text(
         """
         INSERT INTO projections.weekly_reports
-            (id, user_id, period_start, period_end, status, content_ref, updated_at)
+            (id, user_id, period_start, period_end, status, content_ref, summary, updated_at)
         VALUES
-            (:id, :user_id, :period_start, :period_end, 'GENERATED', :content_ref, now())
+            (:id, :user_id, :period_start, :period_end, 'GENERATED', :content_ref, :summary, now())
         ON CONFLICT (id) DO UPDATE SET
             user_id      = EXCLUDED.user_id,
             period_start = EXCLUDED.period_start,
             period_end   = EXCLUDED.period_end,
             status       = EXCLUDED.status,
             content_ref  = EXCLUDED.content_ref,
+            summary      = EXCLUDED.summary,
             updated_at   = now()
         """
     )
@@ -475,6 +480,7 @@ class WeeklyReportProjection:
                     "period_start": event.payload["period_start"],
                     "period_end": event.payload["period_end"],
                     "content_ref": event.payload["content_ref"],
+                    "summary": event.payload.get("summary"),
                 },
             )
         elif event.event_type == weekly_report_events.WEEKLY_REPORT_PUBLISHED:

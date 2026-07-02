@@ -48,6 +48,7 @@ class TradeAllocation(AggregateRoot):
         self.closed_at: datetime | None = None
         self.close_reason: str | None = None
         self.realized_r: Decimal | None = None
+        self.signal_snapshot: dict | None = None
 
     @classmethod
     def create(
@@ -62,6 +63,7 @@ class TradeAllocation(AggregateRoot):
         entry_price_planned: Decimal | None = None,
         sl_price: Decimal | None = None,
         tp_price: Decimal | None = None,
+        signal_snapshot: dict | None = None,
         source: str,
         correlation_id: uuid.UUID,
     ) -> "TradeAllocation":
@@ -81,6 +83,7 @@ class TradeAllocation(AggregateRoot):
                 "entry_price_planned": str(entry_price_planned) if entry_price_planned is not None else None,
                 "sl_price": str(sl_price) if sl_price is not None else None,
                 "tp_price": str(tp_price) if tp_price is not None else None,
+                "signal_snapshot": signal_snapshot,
             },
             source=source,
             correlation_id=correlation_id,
@@ -166,6 +169,7 @@ class TradeAllocation(AggregateRoot):
             self.entry_price_planned = _optional_decimal(event.payload["entry_price_planned"])
             self.sl_price = _optional_decimal(event.payload["sl_price"])
             self.tp_price = _optional_decimal(event.payload["tp_price"])
+            self.signal_snapshot = event.payload.get("signal_snapshot")
             self.status = "CREATED"
         elif event.event_type == events.ALLOCATION_CONFIRMED:
             self.applied_risk_pct = Decimal(event.payload["applied_risk_pct"])

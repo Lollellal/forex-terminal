@@ -37,6 +37,7 @@ class WeeklyReportService:
             period_start=command.period_start,
             period_end=command.period_end,
             content_ref=content_ref,
+            summary=command.summary,
             source=command.source,
             correlation_id=command.correlation_id,
         )

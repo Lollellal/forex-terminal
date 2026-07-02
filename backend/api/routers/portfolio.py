@@ -95,10 +95,10 @@ def get_portfolio(
 
 _WEEKLY_REPORTS_SQL = text(
     """
-    SELECT id, user_id, period_start, period_end, status, content_ref, published_at
+    SELECT id, user_id, period_start, period_end, status, content_ref, summary, published_at
     FROM projections.weekly_reports
     WHERE user_id = :user_id
-    ORDER BY period_start DESC
+    ORDER BY period_start DESC, updated_at DESC
     LIMIT :limit
     """
 )

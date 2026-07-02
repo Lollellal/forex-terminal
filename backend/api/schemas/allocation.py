@@ -18,6 +18,7 @@ class CreateAllocationRequest(BaseModel):
     entry_price_planned: Decimal | None = None
     sl_price: Decimal | None = None
     tp_price: Decimal | None = None
+    signal_snapshot: dict | None = None
 
 
 class MarkAllocationOpenedRequest(BaseModel):
@@ -40,6 +41,7 @@ class AllocationResponse(BaseModel):
     applied_risk_pct: Decimal | None
     close_reason: str | None
     realized_r: Decimal | None
+    signal_snapshot: dict | None = None
     version: int
 
 
@@ -51,9 +53,11 @@ class AllocationOverviewResponse(BaseModel):
     status: str
     planned_risk_pct: Decimal
     applied_risk_pct: Decimal | None
+    opened_at: datetime | None = None
     closed_at: datetime | None
     close_reason: str | None
     realized_r: Decimal | None
+    signal_snapshot: dict | None = None
 
 
 class RiskGateRejectedResponse(BaseModel):

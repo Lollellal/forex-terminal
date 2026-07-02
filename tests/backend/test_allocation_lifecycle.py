@@ -226,3 +226,90 @@ def test_full_lifecycle_via_commands_and_service(db_engine, account_ctx):
     assert row.close_reason == "TP"
     assert row.realized_r == Decimal("1.800")
     assert active_count == 0
+
+
+def test_signal_snapshot_persists_and_stays_immutable(db_engine, account_ctx):
+    _, account_id, allocation_ids = account_ctx
+    service = AllocationLifecycleService(AllocationRepository(EventStore()), _risk_gate())
+    runner = ProjectionRunner(EventStore())
+    snapshot = {
+        "ml_score": -0.364,
+        "quality": "VALID",
+        "edge": "Weak Edge",
+        "alignment": "CONTRARY",
+        "combo_key": "VALID|Weak Edge|Short|CONTRARY",
+        "regime": "RISK_ON",
+        "overall_score": None,
+        "seasonality_score": None,
+        "primary_drivers": None,
+        "weekly_report_id": None,
+        "report_week": None,
+    }
+
+    with db_engine.begin() as conn:
+        allocation = service.create(
+            conn,
+            CreateAllocationCommand(
+                account_id=account_id,
+                pair="AUDCAD",
+                direction="SHORT",
+                planned_risk_pct=Decimal("1.0"),
+                signal_snapshot=snapshot,
+            ),
+        )
+        allocation_ids.append(allocation.id)
+        runner.catch_up(conn)
+
+    with db_engine.connect() as conn:
+        core_row = conn.execute(
+            text("SELECT signal_snapshot FROM core.trade_allocations WHERE id = :id"),
+            {"id": str(allocation.id)},
+        ).one()
+        proj_row = conn.execute(
+            text("SELECT signal_snapshot FROM projections.allocation_overview WHERE allocation_id = :id"),
+            {"id": str(allocation.id)},
+        ).one()
+    assert core_row.signal_snapshot == snapshot
+    assert proj_row.signal_snapshot == snapshot
+
+    with db_engine.begin() as conn:
+        service.confirm(conn, ConfirmAllocationCommand(allocation_id=allocation.id))
+        service.mark_opened(conn, MarkAllocationOpenedCommand(allocation_id=allocation.id))
+        service.close(
+            conn,
+            CloseAllocationCommand(
+                allocation_id=allocation.id, close_reason="TP", realized_r=Decimal("1.2")
+            ),
+        )
+        runner.catch_up(conn)
+
+    with db_engine.connect() as conn:
+        core_row = conn.execute(
+            text("SELECT signal_snapshot, status FROM core.trade_allocations WHERE id = :id"),
+            {"id": str(allocation.id)},
+        ).one()
+    assert core_row.status == "CLOSED"
+    assert core_row.signal_snapshot == snapshot  # unveraendert durch confirm/open/close
+
+
+def test_signal_snapshot_defaults_to_none(db_engine, account_ctx):
+    _, account_id, allocation_ids = account_ctx
+    repo = AllocationRepository(EventStore())
+    allocation = TradeAllocation.create(
+        uuid.uuid4(),
+        account_id=account_id,
+        pair="EURUSD",
+        direction="LONG",
+        planned_risk_pct=Decimal("1.0"),
+        source="system",
+        correlation_id=uuid.uuid4(),
+    )
+    allocation_ids.append(allocation.id)
+
+    with db_engine.begin() as conn:
+        repo.save(conn, allocation)
+
+    with db_engine.connect() as conn:
+        reloaded = repo.load(conn, allocation.id)
+
+    assert reloaded.signal_snapshot is None

@@ -2,10 +2,13 @@ import { Link } from "react-router-dom";
 import { LineChart, Newspaper, ArrowRight, FileText } from "lucide-react";
 import { Screen } from "../components/Screen";
 import { Card } from "../components/Card";
+import { Pill } from "../components/Pill";
 import { SkeletonCard, SkeletonList, ErrorState } from "../components/States";
-import { usePortfolio, useActiveTrades, useWeeklyReports } from "../api/hooks";
+import { usePortfolio, useActiveTrades, useWeeklyReports, useMarketSnapshot } from "../api/hooks";
 import { CURRENT_USER_NAME } from "../api/client";
 import { formatMoney, formatSignedPercent, formatWeekRange, isoWeekNumber, formatDate } from "../lib/format";
+
+const NARRATIVE_PREVIEW_LENGTH = 280;
 
 function greeting(): string {
   const hour = new Date().getHours();
@@ -19,6 +22,7 @@ export function Home() {
   const portfolio = usePortfolio();
   const activeTrades = useActiveTrades();
   const reports = useWeeklyReports();
+  const marketSnapshot = useMarketSnapshot();
 
   if (portfolio.isError) {
     return (
@@ -40,6 +44,12 @@ export function Home() {
   return (
     <Screen title={`${greeting()}, ${CURRENT_USER_NAME}`}>
       <div className="flex flex-col gap-4">
+        {marketSnapshot.data && (
+          <div className="-mt-2 flex justify-end">
+            <Pill tone="neutral">Regime: {marketSnapshot.data.regime}</Pill>
+          </div>
+        )}
+
         <Card className="animate-in text-center">
           {portfolio.isPending ? (
             <SkeletonCard height={120} />
@@ -100,7 +110,7 @@ export function Home() {
         )}
 
         <div>
-          <p className="mb-3 text-sm font-semibold text-ink-soft">Latest Report</p>
+          <p className="mb-3 text-sm font-semibold text-ink-soft">Weekly Narrative</p>
           {reports.isPending ? (
             <SkeletonList count={1} height={140} />
           ) : latestReport ? (
@@ -114,12 +124,23 @@ export function Home() {
                     <p className="mt-1 text-lg font-bold text-ink">
                       {formatWeekRange(latestReport.period_start, latestReport.period_end)}
                     </p>
-                    <p className="mt-1 text-sm text-ink-soft">
-                      Published {latestReport.published_at ? formatDate(latestReport.published_at) : "—"}
-                    </p>
                   </div>
-                  <ArrowRight size={20} strokeWidth={1.75} className="mt-1 text-ink-soft" />
+                  <ArrowRight size={20} strokeWidth={1.75} className="mt-1 shrink-0 text-ink-soft" />
                 </div>
+                {latestReport.summary ? (
+                  <p className="mt-3 border-t border-hairline pt-3 text-sm leading-relaxed text-ink">
+                    {latestReport.summary.length > NARRATIVE_PREVIEW_LENGTH
+                      ? `${latestReport.summary.slice(0, NARRATIVE_PREVIEW_LENGTH).trimEnd()}…`
+                      : latestReport.summary}
+                  </p>
+                ) : (
+                  <p className="mt-3 border-t border-hairline pt-3 text-sm text-ink-soft">
+                    Noch keine Zusammenfassung hinterlegt.
+                  </p>
+                )}
+                <p className="mt-3 text-sm text-ink-soft">
+                  Published {latestReport.published_at ? formatDate(latestReport.published_at) : "—"}
+                </p>
               </Card>
             </Link>
           ) : (

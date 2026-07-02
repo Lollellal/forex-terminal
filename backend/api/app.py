@@ -17,7 +17,15 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from backend.api.routers import accounts, allocations, empires, journal, portfolio, weekly_reports
+from backend.api.routers import (
+    accounts,
+    allocations,
+    empires,
+    journal,
+    market_snapshot,
+    portfolio,
+    weekly_reports,
+)
 from backend.domain.risk.exceptions import RiskGateRejectedError
 from backend.domain.shared.exceptions import ConcurrencyConflictError, EventStreamGapError
 
@@ -42,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(journal.router)
     app.include_router(portfolio.router)
     app.include_router(weekly_reports.router)
+    app.include_router(market_snapshot.router)
 
     @app.exception_handler(LookupError)
     def handle_not_found(request: Request, exc: LookupError) -> JSONResponse:

@@ -59,10 +59,20 @@ def _make_user(db_engine, cleanup_ids) -> str:
     return user_id
 
 
-def _register(cleanup_ids, user_id, period_start="2026-06-22", period_end="2026-06-28", content=b"%PDF-fake-content"):
+def _register(
+    cleanup_ids,
+    user_id,
+    period_start="2026-06-22",
+    period_end="2026-06-28",
+    content=b"%PDF-fake-content",
+    summary=None,
+):
+    data = {"user_id": user_id, "period_start": period_start, "period_end": period_end}
+    if summary is not None:
+        data["summary"] = summary
     response = client.post(
         "/weekly-reports",
-        data={"user_id": user_id, "period_start": period_start, "period_end": period_end},
+        data=data,
         files={"file": ("report.pdf", content, "application/pdf")},
     )
     assert response.status_code == 201, response.text
@@ -145,6 +155,25 @@ def test_download_url_returns_working_signed_url(db_engine, cleanup_ids):
     payload = response.json()
     assert payload["url"].startswith("https://")
     assert body["content_ref"] in payload["url"]
+
+
+def test_register_persists_summary_and_defaults_to_none(db_engine, cleanup_ids):
+    user_id = _make_user(db_engine, cleanup_ids)
+
+    with_summary = _register(cleanup_ids, user_id, summary="Der Schweizer Franken ist die staerkste Waehrung.")
+    assert with_summary["summary"] == "Der Schweizer Franken ist die staerkste Waehrung."
+
+    without_summary = _register(
+        cleanup_ids, user_id, period_start="2026-06-15", period_end="2026-06-21"
+    )
+    assert without_summary["summary"] is None
+
+    with db_engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT summary FROM projections.weekly_reports WHERE id = :id"),
+            {"id": with_summary["id"]},
+        ).one()
+    assert row.summary == "Der Schweizer Franken ist die staerkste Waehrung."
 
 
 def test_list_weekly_reports_for_user(db_engine, cleanup_ids):

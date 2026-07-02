@@ -16,9 +16,9 @@ from .weekly_report import WeeklyReport
 _UPSERT_SQL = text(
     """
     INSERT INTO core.weekly_reports
-        (id, user_id, period_start, period_end, status, content_ref, published_at, version, updated_at)
+        (id, user_id, period_start, period_end, status, content_ref, summary, published_at, version, updated_at)
     VALUES
-        (:id, :user_id, :period_start, :period_end, :status, :content_ref, :published_at, :version, now())
+        (:id, :user_id, :period_start, :period_end, :status, :content_ref, :summary, :published_at, :version, now())
     ON CONFLICT (id) DO UPDATE SET
         status       = EXCLUDED.status,
         content_ref  = EXCLUDED.content_ref,
@@ -52,6 +52,7 @@ class WeeklyReportRepository(EventSourcedRepository[WeeklyReport]):
                     "period_end": aggregate.period_end,
                     "status": aggregate.status,
                     "content_ref": aggregate.content_ref,
+                    "summary": aggregate.summary,
                     "published_at": aggregate.published_at,
                     "version": aggregate.version,
                 },

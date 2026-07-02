@@ -7,7 +7,8 @@ from __future__ import annotations
 
 WEEKLY_REPORT_GENERATED = "WeeklyReportGenerated"
 """Payload: user_id (str), period_start (ISO-Date), period_end (ISO-Date),
-content_ref (str)."""
+content_ref (str), summary (str | None — mechanisch aus der Executive
+Summary des Quell-Reports extrahiert, kein LLM)."""
 
 WEEKLY_REPORT_PUBLISHED = "WeeklyReportPublished"
 """Payload: published_at (ISO-String)."""

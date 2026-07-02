@@ -19,6 +19,7 @@ class RegisterWeeklyReportCommand(Command):
     period_end: date
     content: bytes
     content_type: str = "application/pdf"
+    summary: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

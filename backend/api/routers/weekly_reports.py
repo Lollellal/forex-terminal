@@ -33,6 +33,7 @@ async def register_weekly_report(
     period_start: date = Form(...),
     period_end: date = Form(...),
     file: UploadFile = File(...),
+    summary: str | None = Form(None),
     conn: Connection = Depends(get_write_conn),
 ):
     content = await file.read()
@@ -44,6 +45,7 @@ async def register_weekly_report(
             period_end=period_end,
             content=content,
             content_type=file.content_type or "application/pdf",
+            summary=summary,
         ),
     )
     _projections.catch_up(conn)
@@ -76,5 +78,6 @@ def _to_response(report) -> WeeklyReportResponse:
         period_end=report.period_end,
         status=report.status,
         content_ref=report.content_ref,
+        summary=report.summary,
         published_at=report.published_at,
     )
