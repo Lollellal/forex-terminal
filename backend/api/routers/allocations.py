@@ -19,6 +19,8 @@ from backend.api.schemas.allocation import (
     CreateAllocationRequest,
     MarkAllocationOpenedRequest,
 )
+from backend.domain.account.account_repository import AccountRepository
+from backend.domain.account.account_service import AccountService
 from backend.domain.allocation.allocation_lifecycle_service import AllocationLifecycleService
 from backend.domain.allocation.allocation_repository import AllocationRepository
 from backend.domain.allocation.commands import (
@@ -39,6 +41,7 @@ _service = AllocationLifecycleService(
     AllocationRepository(EventStore()),
     RiskGateService([SamePairOpenPolicy(), ConsecutiveLossesPolicy()]),
 )
+_account_service = AccountService(AccountRepository(EventStore()))
 _projections = ProjectionRunner(EventStore())
 
 
@@ -94,6 +97,7 @@ def close_allocation(
             closed_at=payload.closed_at,
         ),
     )
+    _account_service.recompute_from_closed_allocations(conn, allocation.account_id)
     _projections.catch_up(conn)
     return _to_response(allocation)
 

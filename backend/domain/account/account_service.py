@@ -7,12 +7,18 @@ mit AllocationLifecycleService/JournalNoteService."""
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
-from sqlalchemy import Connection
+from sqlalchemy import Connection, text
 
 from .account import Account
 from .account_repository import AccountRepository
 from .commands import CreateAccountCommand, UpdateAccountBalanceCommand
+
+_CLOSED_ALLOCATIONS_SQL = text(
+    "SELECT applied_risk_pct, realized_r FROM core.trade_allocations "
+    "WHERE account_id = :account_id AND status = 'CLOSED'"
+)
 
 
 class AccountService:
@@ -43,3 +49,24 @@ class AccountService:
         )
         self._repository.save(conn, account)
         return account
+
+    def recompute_from_closed_allocations(self, conn: Connection, account_id: uuid.UUID) -> Account:
+        """Fuehrt Balance/Equity aus allen CLOSED-Allocations des Accounts
+        nach. Fixed-Fractional gegen initial_balance (kein Compounding) --
+        identische Formel wie compute_account_stats in src/empire.py, damit
+        Zahlen zwischen Legacy-Anzeige und Backend konsistent bleiben. Wird
+        von der Allocation-Close-Koordination aufgerufen (siehe
+        AllocationLifecycleService), nicht Teil des Allocation-Aggregates
+        selbst (Trennung Account/Allocation, wie in BACKEND_ARCHITECTURE.md
+        beschrieben)."""
+        account = self._repository.load(conn, account_id)
+        rows = conn.execute(_CLOSED_ALLOCATIONS_SQL, {"account_id": str(account_id)}).all()
+        pnl = sum(
+            (account.initial_balance * Decimal(row.applied_risk_pct) / Decimal(100) * Decimal(row.realized_r))
+            for row in rows
+        ) if rows else Decimal("0")
+        new_balance = account.initial_balance + pnl
+        return self.update_balance(
+            conn,
+            UpdateAccountBalanceCommand(account_id=account_id, balance=new_balance, equity=new_balance),
+        )

@@ -160,6 +160,7 @@ def publish() -> None:
             conn_factory=engine,
             lifecycle_service=lifecycle_service,
             allocation_repo=allocation_repo,
+            account_service=account_service,
             mapping=mapping,
             legacy_allocations=[
                 a for a in empire["allocations"] if a["account_id"] == legacy_account_id
@@ -245,6 +246,7 @@ def _publish_allocations(
     conn_factory,
     lifecycle_service: AllocationLifecycleService,
     allocation_repo: AllocationRepository,
+    account_service: AccountService,
     mapping: dict,
     legacy_allocations: list[dict],
     backend_account_id: uuid.UUID,
@@ -326,6 +328,7 @@ def _publish_allocations(
                         source="system",
                     ),
                 )
+                account_service.recompute_from_closed_allocations(conn, backend_account_id)
 
         print(f"Allocation {legacy_id} ({pair} {direction}) -> {allocation_id}: Status {current.status}")
 

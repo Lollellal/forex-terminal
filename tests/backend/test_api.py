@@ -200,6 +200,39 @@ def test_allocation_full_lifecycle_via_api(db_engine, cleanup_ids):
     assert single.json()["realized_r"] == "1.800"
 
 
+def test_closing_allocation_recomputes_account_balance(db_engine, cleanup_ids):
+    user_id = _make_user(db_engine, cleanup_ids)
+    account_id = client.post(
+        "/accounts",
+        json={
+            "user_id": user_id,
+            "account_type": "PROP_FIRM",
+            "initial_balance": "10000.00",
+            "initial_equity": "10000.00",
+        },
+    ).json()["id"]
+    cleanup_ids["account"].append(account_id)
+
+    def _open_and_close(pair: str, realized_r: str) -> None:
+        allocation_id = client.post(
+            "/allocations",
+            json={"account_id": account_id, "pair": pair, "direction": "LONG", "planned_risk_pct": "1.0"},
+        ).json()["id"]
+        cleanup_ids["allocation"].append(allocation_id)
+        client.post(f"/allocations/{allocation_id}/confirm")
+        client.post(f"/allocations/{allocation_id}/open", json={})
+        client.post(f"/allocations/{allocation_id}/close", json={"close_reason": "TP", "realized_r": realized_r})
+
+    # WIN: +1.7R auf 1% Risiko -> +170; LOSS: -1R auf 1% Risiko -> -100. Netto +70.
+    _open_and_close("EURUSD", "1.7")
+    _open_and_close("GBPUSD", "-1.0")
+
+    balance = client.get(f"/accounts/{account_id}/balance")
+    assert balance.status_code == 200
+    assert balance.json()["balance"] == "10070.00"
+    assert balance.json()["equity"] == "10070.00"
+
+
 def test_create_allocation_invalid_direction_returns_400(db_engine, cleanup_ids):
     user_id = _make_user(db_engine, cleanup_ids)
     account_id = client.post(

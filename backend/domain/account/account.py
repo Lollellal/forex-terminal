@@ -31,6 +31,7 @@ class Account(AggregateRoot):
         self.status: str | None = None
         self.balance: Decimal | None = None
         self.equity: Decimal | None = None
+        self.initial_balance: Decimal | None = None
 
     @classmethod
     def create(
@@ -92,6 +93,10 @@ class Account(AggregateRoot):
             self.status = "ACTIVE"
             self.balance = Decimal(event.payload["balance"])
             self.equity = Decimal(event.payload["equity"])
+            # ACCOUNT_CREATED ist per Definition der einzige Zeitpunkt, an dem
+            # balance == initial_balance gilt -- kein eigenes Payload-Feld
+            # noetig, auch fuer bereits bestehende Events rueckwirkend korrekt.
+            self.initial_balance = self.balance
         elif event.event_type == events.ACCOUNT_UPDATED:
             self.balance = Decimal(event.payload["balance"])
             self.equity = Decimal(event.payload["equity"])
