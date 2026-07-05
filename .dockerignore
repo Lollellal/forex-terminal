@@ -1,0 +1,42 @@
+# Docker-Build-Context fuer das Dockerfile (Cloud-Deployment von backend/api,
+# Phase 2 "PC muss nicht mehr an sein"). Das Dockerfile kopiert ohnehin nur
+# requirements-api.txt + backend/ — der Rest wird hier ausgeschlossen, damit
+# der Build-Context nicht durch Legacy-Terminal/Backtests/Reports/Daten
+# aufgeblaeht wird (Uploadgroesse + Build-Dauer bei jedem Deploy).
+
+# Legacy-Terminal (Flask-App, Research/Scanner-Skripte) — nicht Teil der API
+terminal_server.py
+backtest_*.py
+analyze_*.py
+ablation_study.py
+src/
+
+# Lokale Daten, Reports, Research-Output
+data/
+reports/
+Research weekly reports/
+*.log
+*.parquet
+*.pdf
+
+# Mobile (separates Deployment, siehe Phase 4)
+mobile/
+
+# Tests (nicht zur Laufzeit gebraucht, laufen lokal/CI)
+tests/
+
+# Migrations (laufen weiterhin manuell/lokal gegen Supabase, siehe Dockerfile-Kommentar)
+backend/migrations/
+
+# Uebliche Ausschluesse
+.git/
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.env
+.env.example
+*.md

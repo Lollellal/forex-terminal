@@ -1,0 +1,18 @@
+# Schlanke Requirements nur für backend/api (Phase 2 "PC muss nicht mehr an
+# sein" — Cloud-Deployment). Enthält NICHT die ML/Backtest/Legacy-Terminal-
+# Abhängigkeiten aus requirements.txt (pandas, scikit-learn, flask, ...) —
+# die API braucht sie nicht, sie würden nur Image-Größe und Build-Zeit
+# aufblähen. alembic ist bewusst ausgeschlossen: Migrationen laufen weiterhin
+# manuell/lokal gegen Supabase, nicht automatisiert beim Container-Start.
+#
+# Bei Änderungen an backend/api, backend/domain oder backend/infrastructure
+# immer gegen requirements.txt gegenchecken, ob ein neuer Import eine neue
+# Zeile hier braucht.
+
+fastapi>=0.115.0
+uvicorn>=0.32.0
+sqlalchemy>=2.0.0
+psycopg[binary]>=3.1.0
+supabase>=2.0.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.0

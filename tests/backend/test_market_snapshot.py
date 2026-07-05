@@ -9,8 +9,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.api.app import app
+from backend.api.auth import get_api_auth_token
 
 client = TestClient(app)
+try:
+    client.headers["Authorization"] = f"Bearer {get_api_auth_token()}"
+except RuntimeError as exc:
+    pytest.skip(str(exc), allow_module_level=True)
 
 
 @pytest.fixture

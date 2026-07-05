@@ -1,4 +1,5 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const API_TOKEN = import.meta.env.VITE_API_TOKEN as string;
 
 export const CURRENT_USER_ID = import.meta.env.VITE_USER_ID as string;
 export const CURRENT_USER_NAME = (import.meta.env.VITE_USER_DISPLAY_NAME as string) ?? "";
@@ -15,6 +16,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
+      Authorization: `Bearer ${API_TOKEN}`,
       ...(init?.body && !(init.body instanceof FormData)
         ? { "Content-Type": "application/json" }
         : {}),

@@ -13,10 +13,11 @@ kein öffentlicher Deploy. Auth kommt als eigener Schritt.
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from backend.api.auth import require_auth_token
 from backend.api.routers import (
     accounts,
     allocations,
@@ -31,7 +32,10 @@ from backend.domain.shared.exceptions import ConcurrencyConflictError, EventStre
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Trading OS API", version="0.8.0")
+    # Globale Dependency statt pro-Router: gilt für jede Route, unabhängig
+    # davon, welcher Router sie registriert (siehe backend/api/auth.py) —
+    # kein Auth-Aufwand pro Endpunkt nötig.
+    app = FastAPI(title="Trading OS API", version="0.8.0", dependencies=[Depends(require_auth_token)])
 
     # Browser-Clients (Mobile-Web-App, Schritt 9) laufen auf einem anderen
     # Origin als die API — ohne CORS blockt der Browser jeden Request.
