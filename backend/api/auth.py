@@ -22,7 +22,9 @@ def get_api_auth_token() -> str:
             "API_AUTH_TOKEN in .env ein (z.B. `python -c \"import secrets; "
             'print(secrets.token_urlsafe(32))"`).'
         )
-    return token
+    # .strip(): siehe backend/infrastructure/db.py get_database_url() — Hosting-
+    # Dashboards übernehmen beim Einfügen gerne einen Zeilenumbruch mit.
+    return token.strip()
 
 
 def require_auth_token(authorization: str | None = Header(default=None)) -> None:

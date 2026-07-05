@@ -32,7 +32,11 @@ def get_database_url() -> str:
             "(Settings -> Database -> Connection string) als DATABASE_URL in .env ein "
             "(siehe BACKEND_ARCHITECTURE.md §2.1)."
         )
-    return normalize_database_url(url)
+    # .strip(): Hosting-Dashboards (z.B. Render) übernehmen beim Einfügen
+    # gerne einen abschließenden Zeilenumbruch aus der Zwischenablage — das
+    # macht sonst z.B. aus der Datenbank "postgres" ein "postgres\n" und die
+    # Verbindung schlägt mit einer kryptischen FATAL-Meldung fehl.
+    return normalize_database_url(url.strip())
 
 
 def get_engine() -> Engine:

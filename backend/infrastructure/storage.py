@@ -34,7 +34,9 @@ def _get_client() -> Client:
             "SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY sind nicht gesetzt — siehe .env "
             "(Supabase Dashboard -> Settings -> API -> service_role secret)."
         )
-    return create_client(url, key)
+    # .strip(): siehe backend/infrastructure/db.py get_database_url() — Hosting-
+    # Dashboards übernehmen beim Einfügen gerne einen Zeilenumbruch mit.
+    return create_client(url.strip(), key.strip())
 
 
 class WeeklyReportStorage:
