@@ -24,6 +24,16 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+try:
+    from xgboost import XGBClassifier as _XGBClassifier
+    _XGB_AVAILABLE = True
+except ImportError:
+    _XGB_AVAILABLE = False
+
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.preprocessing import LabelEncoder
+
 logger = logging.getLogger(__name__)
 
 # ── Konstanten ─────────────────────────────────────────────────────────────
@@ -52,10 +62,12 @@ RF_PARAMS: dict = {
 @dataclass
 class ModelResult:
     """Vorhersage eines einzelnen Modells fuer eine Waehrung."""
-    currency:   str
-    direction:  str   # "BULLISH" | "NEUTRAL" | "BEARISH"
-    confidence: float # 0–100
-    model_id:   str
+    currency:    str
+    direction:   str   # "BULLISH" | "NEUTRAL" | "BEARISH"
+    confidence:  float # 0–100
+    model_id:    str
+    bull_proba:  float = 0.0  # P(↑) raw probability 0–1
+    bear_proba:  float = 0.0  # P(↓) raw probability 0–1
 
 
 @dataclass
@@ -69,6 +81,7 @@ class TrainMetrics:
     directional_accuracy:  float   # nur auf nicht-neutralen Samples
     feature_importance:    dict[str, float] = field(default_factory=dict)
     cutoff_date:           str = ""
+    n_refit:               int = 0   # Samples beim finalen Refit auf 100% der Daten (nach OOS-Eval)
 
 
 # ── Basis-Klasse ───────────────────────────────────────────────────────────
@@ -167,11 +180,17 @@ class BaseForexModel:
             direction  = LABEL_TO_DIRECTION.get(best_class, "NEUTRAL")
             confidence = float(proba[best_idx] * 100)
 
+            class_list = list(classes)
+            bull_p = float(proba[class_list.index(1)])  if 1  in class_list else 0.0
+            bear_p = float(proba[class_list.index(-1)]) if -1 in class_list else 0.0
+
             results.append(ModelResult(
                 currency   = str(row.get("currency", "UNKNOWN")),
                 direction  = direction,
                 confidence = confidence,
                 model_id   = self.model_id,
+                bull_proba = bull_p,
+                bear_proba = bear_p,
             ))
         return results
 
@@ -217,6 +236,255 @@ class BaseForexModel:
     def __repr__(self) -> str:
         status = "trained" if self._is_fitted else "untrained"
         return f"{self.__class__.__name__}(id={self.model_id}, {status})"
+
+
+# ── XGBoost Basis-Klasse ───────────────────────────────────────────────────
+
+XGB_PARAMS: dict = {
+    "n_estimators":    200,
+    "max_depth":         4,
+    "learning_rate":   0.05,
+    "subsample":       0.8,
+    "colsample_bytree": 0.8,
+    "eval_metric":   "mlogloss",
+    "random_state":     42,
+    "n_jobs":           -1,
+}
+
+
+class _XGBLabelWrapper(BaseEstimator, ClassifierMixin):
+    """
+    Wrapper um XGBClassifier: mappt beliebige Labels auf [0, n_classes-1].
+    XGBoost akzeptiert nativ keine negativen Labels (-1, 0, 1).
+    """
+
+    def __init__(self, **kwargs):
+        self._xgb_params = kwargs
+        self._xgb: "_XGBClassifier | None" = None
+        self._le = LabelEncoder()
+
+    def fit(self, X, y, sample_weight=None):
+        if not _XGB_AVAILABLE:
+            raise RuntimeError("xgboost nicht installiert: pip install xgboost")
+        y_enc = self._le.fit_transform(y)
+        self._xgb = _XGBClassifier(**self._xgb_params)
+        self._xgb.fit(X, y_enc, sample_weight=sample_weight)
+        self.classes_ = self._le.classes_        # sklearn-Konvention
+        return self
+
+    def predict(self, X) -> np.ndarray:
+        y_enc = self._xgb.predict(X)
+        return self._le.inverse_transform(y_enc.astype(int))
+
+    def predict_proba(self, X) -> np.ndarray:
+        return self._xgb.predict_proba(X)
+
+    @property
+    def feature_importances_(self) -> np.ndarray:
+        return self._xgb.feature_importances_
+
+
+class BaseForexModelXGB(BaseForexModel):
+    """XGBoost-Variante von BaseForexModel mit Label-Encoding für {-1,0,1}."""
+
+    def _build_pipeline(self) -> Pipeline:
+        if not _XGB_AVAILABLE:
+            raise RuntimeError("xgboost nicht installiert: pip install xgboost")
+        return Pipeline([
+            ("scaler", StandardScaler()),
+            ("clf",    _XGBLabelWrapper(**XGB_PARAMS)),
+        ])
+
+
+class BaseForexModelXGBSelectK(BaseForexModelXGB):
+    """XGBoost + SelectKBest(k) für erweiterte Feature-Sets — reduziert Rauschen."""
+    select_k: int = 5
+
+    def _build_pipeline(self) -> Pipeline:
+        if not _XGB_AVAILABLE:
+            raise RuntimeError("xgboost nicht installiert: pip install xgboost")
+        k = min(self.select_k, len(self.feature_cols))
+        return Pipeline([
+            ("scaler",   StandardScaler()),
+            ("selector", SelectKBest(f_classif, k=k)),
+            ("clf",      _XGBLabelWrapper(**XGB_PARAMS)),
+        ])
+
+    def fit(self, train_df: pd.DataFrame, target_col: str = "_target") -> dict:
+        X, y = self._clean_data(train_df, target_col)
+        if len(X) < 30:
+            raise ValueError(f"{self.model_id}: Zu wenige Samples: {len(X)}")
+
+        self._pipeline = self._build_pipeline()
+        self._pipeline.fit(X, y)
+
+        selector = self._pipeline.named_steps["selector"]
+        clf      = self._pipeline.named_steps["clf"]
+        selected = [c for c, ok in zip(self.feature_cols, selector.get_support()) if ok]
+        self._feature_importance = dict(zip(selected, clf.feature_importances_))
+        self._is_fitted = True
+
+        preds = self._pipeline.predict(X)
+        train_acc = float(np.mean(preds == y))
+        logger.info(
+            "%s trainiert — %d/%d Features, Train-Acc: %.3f",
+            self.model_id, len(selected), len(self.feature_cols), train_acc,
+        )
+        return {"n_train": len(X), "train_accuracy": train_acc}
+
+
+class BaseForexModelXGBCurrency(BaseForexModelXGB):
+    """XGBoost mit Currency-Gewichtung: Zeilen der Ziel-Währung erhalten höheres Sample-Weight."""
+    weighted_currencies: list = []   # z.B. ["CAD"] oder ["JPY"]
+    currency_weight: float = 3.0     # Gewichtungsfaktor für Ziel-Währung
+
+    def fit(self, train_df: pd.DataFrame, target_col: str = "_target") -> dict:
+        cols  = self.feature_cols + [target_col]
+        valid = (
+            train_df[cols + ["currency"]].dropna(subset=cols)
+            if "currency" in train_df.columns
+            else train_df[cols].dropna()
+        )
+        X = valid[self.feature_cols].to_numpy(dtype=float)
+        y = valid[target_col].to_numpy(dtype=int)
+        if len(X) < 30:
+            raise ValueError(f"{self.model_id}: Zu wenige Samples: {len(X)}")
+
+        weights = np.ones(len(X))
+        if self.weighted_currencies and "currency" in valid.columns:
+            mask = valid["currency"].isin(self.weighted_currencies).values
+            weights[mask] = self.currency_weight
+
+        self._pipeline = self._build_pipeline()
+        self._pipeline.fit(X, y, clf__sample_weight=weights)
+
+        clf = self._pipeline.named_steps["clf"]
+        self._feature_importance = dict(zip(self.feature_cols, clf.feature_importances_))
+        self._is_fitted = True
+
+        preds = self._pipeline.predict(X)
+        train_acc = float(np.mean(preds == y))
+        logger.info(
+            "%s trainiert — %d Samples (w=%.1f für %s), Train-Acc: %.3f",
+            self.model_id, len(X), self.currency_weight,
+            self.weighted_currencies, train_acc,
+        )
+        return {"n_train": len(X), "train_accuracy": train_acc}
+
+
+# ── Ensemble-Infrastruktur ─────────────────────────────────────────────────
+
+class _EnsemblePipeline:
+    """
+    Fake-Pipeline für den WF-Backtester: kombiniert mehrere gefittete
+    sklearn-Pipelines per Majority- oder Weighted-Voting.
+
+    predict(X_full) erwartet X mit allen Union-Features in der Reihenfolge
+    von all_feature_cols; extrahiert pro Member den richtigen Sub-Slice.
+    """
+
+    def __init__(
+        self,
+        pipelines:       list,
+        member_cols:     list[list[str]],
+        all_feature_cols: list[str],
+        weights:         list | None,
+        strategy:        str,
+    ) -> None:
+        self.pipelines   = pipelines
+        self.member_cols = member_cols
+        self.strategy    = strategy
+        self.weights     = weights
+        self._idx        = {c: i for i, c in enumerate(all_feature_cols)}
+
+    def predict(self, X_full: np.ndarray) -> np.ndarray:
+        preds = []
+        for pipe, cols in zip(self.pipelines, self.member_cols):
+            idx = [self._idx[c] for c in cols]
+            preds.append(pipe.predict(X_full[:, idx]))
+
+        arr = np.array(preds, dtype=float)   # (n_members, n_samples)
+
+        if self.strategy == "majority":
+            # Labels {-1,+1}: sum > 0  ↔  ≥3/5 stimmen für BULL
+            return np.where(arr.sum(axis=0) > 0, 1, -1).astype(int)
+
+        # "weighted": accuracy-gewichtetes Voting
+        w = np.array(self.weights if self.weights else [1.0] * len(self.pipelines))
+        w = w[: len(self.pipelines)]
+        w = w / w.sum()
+        return np.where((arr * w[:, None]).sum(axis=0) > 0, 1, -1).astype(int)
+
+
+class EnsembleForexModel(BaseForexModel):
+    """
+    Ensemble mehrerer Forex-Modelle mit Majority- oder Weighted-Voting.
+
+    Unterklassen setzen:
+        member_classes    — Liste der Mitglieds-Modellklassen
+        strategy          — "majority" | "weighted"
+        accuracy_weights  — Genauigkeiten aus Runde 2 (für strategy="weighted")
+    """
+
+    member_classes:   list       = []
+    strategy:         str        = "majority"
+    accuracy_weights: list | None = None
+
+    def __init__(self) -> None:
+        super().__init__()
+        # feature_cols = geordnete Union aller Member-Feature-Sets
+        seen: dict = {}
+        for cls in self.member_classes:
+            for col in cls.feature_cols:
+                seen.setdefault(col, None)
+        self.feature_cols = list(seen.keys())
+
+    def _build_pipeline(self):
+        return None  # wird nicht direkt genutzt
+
+    def fit(self, train_df: pd.DataFrame, target_col: str = "_target") -> dict:
+        fitted_pipes: list = []
+        fitted_cols:  list = []
+
+        for cls in self.member_classes:
+            member = cls()
+            try:
+                member.fit(train_df, target_col)
+                fitted_pipes.append(member._pipeline)
+                fitted_cols.append(list(member.feature_cols))
+            except (ValueError, RuntimeError) as exc:
+                logger.debug("Ensemble-Member %s übersprungen: %s", cls.model_id, exc)
+
+        if not fitted_pipes:
+            raise ValueError(
+                f"{self.model_id}: Alle {len(self.member_classes)} Mitglieder fehlgeschlagen"
+            )
+
+        weights = (
+            list(self.accuracy_weights[: len(fitted_pipes)])
+            if self.accuracy_weights else None
+        )
+        self._pipeline = _EnsemblePipeline(
+            fitted_pipes, fitted_cols, self.feature_cols, weights, self.strategy
+        )
+        self._is_fitted = True
+
+        # Train-Accuracy auf Union-Features (NaN-bereinigt)
+        valid_cols = [c for c in self.feature_cols + [target_col] if c in train_df.columns]
+        valid      = train_df[valid_cols].dropna()
+        n_train    = len(valid)
+        train_acc  = float("nan")
+        if n_train >= 10 and all(c in valid.columns for c in self.feature_cols):
+            X_tr      = valid[self.feature_cols].to_numpy(dtype=float)
+            y_tr      = valid[target_col].to_numpy(dtype=int)
+            train_acc = float(np.mean(self._pipeline.predict(X_tr) == y_tr))
+
+        logger.info(
+            "%s trainiert — %d/%d Mitglieder aktiv, Train-Acc: %s",
+            self.model_id, len(fitted_pipes), len(self.member_classes),
+            f"{train_acc:.3f}" if not np.isnan(train_acc) else "n/a",
+        )
+        return {"n_train": n_train, "train_accuracy": train_acc}
 
 
 # ── Gruppe A: Modell-Definitionen ──────────────────────────────────────────
@@ -315,7 +583,7 @@ GROUP_A_MODEL_CLASSES: list[type[BaseForexModel]] = [
     A1LeitzinsAbsolut,
     A2Zinsdifferenz,
     A3Zinserwartung,
-    A4ZBHaltung,
+    # A4ZBHaltung entfernt: 87.1% Korrelation mit A1, schwaecher (50.8% vs 51.8%)
     A5Zinsuberraschung,
 ]
 
