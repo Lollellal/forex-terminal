@@ -9,6 +9,7 @@ import pytest
 import requests
 
 from src.data.calendar_fetcher import (
+    BotBlockedError,
     G7_COUNTRY_IDS,
     HIGH_IMPACT_KEYWORDS,
     _normalize_date,
@@ -40,7 +41,7 @@ MOCK_HTML = """
   </td>
   <td class="left event"><a href="#">Nonfarm Payrolls</a></td>
   <td></td>
-  <td id="eventActual_100"></td>
+  <td id="eventActual_100">185K</td>
   <td id="eventForecast_100">175K</td>
   <td id="eventPrevious_100">228K</td>
 </tr>
@@ -55,7 +56,7 @@ MOCK_HTML = """
   </td>
   <td class="left event"><a href="#">ECB Interest Rate Decision</a></td>
   <td></td>
-  <td id="eventActual_101"></td>
+  <td id="eventActual_101">4.25%</td>
   <td id="eventForecast_101">4.25%</td>
   <td id="eventPrevious_101">4.50%</td>
 </tr>
@@ -136,7 +137,7 @@ MOCK_HTML_IMPACT_CLASS = """
 
 def test_parse_liefert_alle_felder():
     df = parse_calendar_html(MOCK_HTML)
-    expected_cols = {"date", "time", "currency", "event_name", "impact", "forecast", "previous"}
+    expected_cols = {"date", "time", "currency", "event_name", "impact", "actual", "forecast", "previous"}
     assert expected_cols.issubset(set(df.columns))
 
 
@@ -167,6 +168,25 @@ def test_parse_forecast_und_previous():
     assert df.loc[0, "forecast"] == "175K"
     assert df.loc[0, "previous"] == "228K"
     assert df.loc[1, "forecast"] == "4.25%"
+
+
+def test_parse_actual_feld_gefuellt():
+    """Regression: 'actual' wurde frueher nie ausgelesen (immer leer/fehlend)."""
+    df = parse_calendar_html(MOCK_HTML)
+    assert df.loc[0, "actual"] == "185K"      # Nonfarm Payrolls
+    assert df.loc[1, "actual"] == "4.25%"     # ECB Interest Rate Decision
+
+
+def test_parse_actual_feld_leer_wenn_event_noch_nicht_eingetreten():
+    df = parse_calendar_html(MOCK_HTML)
+    # Building Permits (Event 102) hat kein Actual im Mock
+    assert df.loc[2, "actual"] == ""
+
+
+def test_parse_leerer_df_hat_actual_spalte():
+    from src.data.calendar_fetcher import _empty_calendar_df
+    df = _empty_calendar_df()
+    assert "actual" in df.columns
 
 
 def test_parse_time_korrekt():
@@ -434,6 +454,27 @@ def test_fetch_gibt_leer_nach_allen_fehlern(mock_post, mock_sleep):
     result = fetch_raw_calendar(date_from="2026-04-28", date_to="2026-05-05", max_retries=2)
     assert result == ""
     assert mock_post.call_count == 2
+
+
+def _mock_429_response() -> MagicMock:
+    """Erstellt ein Mock-Response-Objekt, das raise_for_status() mit HTTP 429 wirft."""
+    mock = MagicMock()
+    mock.status_code = 429
+    http_error = requests.exceptions.HTTPError("429 Too Many Requests")
+    http_error.response = mock
+    mock.raise_for_status.side_effect = http_error
+    return mock
+
+
+@patch("src.data.calendar_fetcher.time.sleep")
+@patch("src.data.calendar_fetcher.requests.post")
+def test_fetch_wirft_bot_blocked_error_nach_429(mock_post, mock_sleep):
+    """Regression: Bot-Block (429) muss unterscheidbar von 'keine Daten' sein,
+    damit der Backfill-Runner den Batch sofort abbrechen kann statt Monate
+    faelschlich als 'failed' zu markieren."""
+    mock_post.return_value = _mock_429_response()
+    with pytest.raises(BotBlockedError):
+        fetch_raw_calendar(date_from="2013-07-01", date_to="2013-07-31", max_retries=2)
 
 
 @patch("src.data.calendar_fetcher.requests.post")

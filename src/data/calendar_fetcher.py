@@ -29,6 +29,11 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+
+class BotBlockedError(Exception):
+    """Alle Retries scheiterten an einem Bot-Schutz (HTTP 403/429), nicht an fehlenden Daten."""
+
+
 # ── Konstanten ─────────────────────────────────────────────────────────────
 
 CALENDAR_URL = (
@@ -53,6 +58,7 @@ G7_COUNTRY_IDS: dict[str, int] = {
     "CAD": 6,
     "CHF": 12,
     "AUD": 25,
+    "NZD": 43,   # New Zealand (investing.com country ID)
 }
 
 COUNTRY_ID_TO_CURRENCY: dict[int, str] = {v: k for k, v in G7_COUNTRY_IDS.items()}
@@ -142,8 +148,10 @@ def fetch_raw_calendar(
     form_data = _build_form_data(date_from, date_to, country_ids)
     headers = _make_headers()
     last_error: Exception | None = None
+    bot_blocked = False
 
     for attempt in range(1, max_retries + 1):
+        bot_blocked = False
         try:
             logger.info(
                 "Lade Kalender %s – %s (Versuch %d/%d) ...",
@@ -173,6 +181,7 @@ def fetch_raw_calendar(
             logger.error("HTTP-Fehler (Versuch %d): %s", attempt, exc)
             last_error = exc
             if exc.response is not None and exc.response.status_code in BOT_BLOCK_CODES:
+                bot_blocked = True
                 wait = RETRY_BACKOFF ** attempt * 3
                 logger.warning(
                     "Bot-Schutz erkannt (HTTP %d) — warte %.0f s ...",
@@ -191,6 +200,8 @@ def fetch_raw_calendar(
             time.sleep(wait)
 
     logger.error("Alle Retries fehlgeschlagen. Letzter Fehler: %s", last_error)
+    if bot_blocked:
+        raise BotBlockedError(f"Bot-Schutz (403/429) nach {max_retries} Versuchen: {last_error}")
     return ""
 
 
@@ -283,7 +294,7 @@ def _normalize_date(text: str) -> str:
 
 def _empty_calendar_df() -> pd.DataFrame:
     return pd.DataFrame(
-        columns=["date", "time", "currency", "event_name", "impact", "forecast", "previous"]
+        columns=["date", "time", "currency", "event_name", "impact", "actual", "forecast", "previous"]
     )
 
 
@@ -305,8 +316,12 @@ def parse_calendar_html(html: str) -> pd.DataFrame:
     for row in soup.find_all("tr"):
         classes = row.get("class", [])
 
-        # Datums-Trennzeile
-        if "theDay" in classes:
+        # Datums-Trennzeile — entweder 'theDay'-Klasse oder leere Klasse mit Datumstext
+        if "theDay" in classes or (
+            not classes
+            and "js-event-item" not in classes
+            and _normalize_date(row.get_text(separator=" ", strip=True)) != row.get_text(separator=" ", strip=True)
+        ):
             current_date = _normalize_date(row.get_text(separator=" ", strip=True))
             continue
 
@@ -328,11 +343,13 @@ def parse_calendar_html(html: str) -> pd.DataFrame:
             if not event_name:
                 continue
 
-            # Forecast und Previous via ID-Konvention: eventRowId_X → eventForecast_X
+            # Actual/Forecast/Previous via ID-Konvention: eventRowId_X → eventActual_X etc.
             row_id = row.get("id", "")
+            actual_id = row_id.replace("eventRowId_", "eventActual_")
             forecast_id = row_id.replace("eventRowId_", "eventForecast_")
             previous_id = row_id.replace("eventRowId_", "eventPrevious_")
 
+            actual_td = soup.find("td", id=actual_id) if actual_id else None
             forecast_td = soup.find("td", id=forecast_id) if forecast_id else None
             previous_td = soup.find("td", id=previous_id) if previous_id else None
 
@@ -342,6 +359,7 @@ def parse_calendar_html(html: str) -> pd.DataFrame:
                 "currency": currency,
                 "event_name": event_name,
                 "impact": impact,
+                "actual": actual_td.get_text(strip=True) if actual_td else "",
                 "forecast": forecast_td.get_text(strip=True) if forecast_td else "",
                 "previous": previous_td.get_text(strip=True) if previous_td else "",
             })
