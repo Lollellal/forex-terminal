@@ -19,18 +19,17 @@ from src.data.cot_fetcher import (
 # ── Test-Fixture ───────────────────────────────────────────────────────────
 
 def make_raw_df(n_weeks: int = 200) -> pd.DataFrame:
-    """Erstellt minimalen Mock der CFTC-Rohdaten."""
+    """Erstellt minimalen Mock der CFTC-Rohdaten (Legacy TXT-Format mit Leerzeichen-Spalten)."""
     rng = np.random.default_rng(42)
     dates = pd.date_range("2021-01-05", periods=n_weeks, freq="W-TUE")
 
     markets = {
         "EUR": "EURO FX - CHICAGO MERCANTILE EXCHANGE",
-        "GBP": "BRITISH POUND STERLING - CHICAGO MERCANTILE EXCHANGE",
+        "GBP": "BRITISH POUND - CHICAGO MERCANTILE EXCHANGE",
         "JPY": "JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE",
         "CAD": "CANADIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
         "CHF": "SWISS FRANC - CHICAGO MERCANTILE EXCHANGE",
         "AUD": "AUSTRALIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
-        "USD": "U.S. DOLLAR INDEX - ICE FUTURES U.S.",
     }
 
     rows = []
@@ -39,25 +38,25 @@ def make_raw_df(n_weeks: int = 200) -> pd.DataFrame:
             long_ = int(rng.integers(50_000, 200_000))
             short_ = int(rng.integers(50_000, 200_000))
             rows.append({
-                "Market_and_Exchange_Names": market_name,
-                "Report_Date_as_YYYY-MM-DD": date.strftime("%Y-%m-%d"),
-                "NonComm_Positions_Long_All": long_,
-                "NonComm_Positions_Short_All": short_,
-                "Change_in_NonComm_Long_All": int(rng.integers(-10_000, 10_000)),
-                "Change_in_NonComm_Short_All": int(rng.integers(-10_000, 10_000)),
-                "Open_Interest_All": long_ + short_ + int(rng.integers(10_000, 50_000)),
+                "Market and Exchange Names": market_name,
+                "As of Date in Form YYYY-MM-DD": date.strftime("%Y-%m-%d"),
+                "Noncommercial Positions-Long (All)": long_,
+                "Noncommercial Positions-Short (All)": short_,
+                "Change in Noncommercial-Long (All)": int(rng.integers(-10_000, 10_000)),
+                "Change in Noncommercial-Short (All)": int(rng.integers(-10_000, 10_000)),
+                "Open Interest (All)": long_ + short_ + int(rng.integers(10_000, 50_000)),
             })
 
     # Nicht-Waehrungs-Kontrakt — muss herausgefiltert werden
     for date in dates[:5]:
         rows.append({
-            "Market_and_Exchange_Names": "WHEAT - CHICAGO BOARD OF TRADE",
-            "Report_Date_as_YYYY-MM-DD": date.strftime("%Y-%m-%d"),
-            "NonComm_Positions_Long_All": 10_000,
-            "NonComm_Positions_Short_All": 5_000,
-            "Change_in_NonComm_Long_All": 100,
-            "Change_in_NonComm_Short_All": -50,
-            "Open_Interest_All": 20_000,
+            "Market and Exchange Names": "WHEAT - CHICAGO BOARD OF TRADE",
+            "As of Date in Form YYYY-MM-DD": date.strftime("%Y-%m-%d"),
+            "Noncommercial Positions-Long (All)": 10_000,
+            "Noncommercial Positions-Short (All)": 5_000,
+            "Change in Noncommercial-Long (All)": 100,
+            "Change in Noncommercial-Short (All)": -50,
+            "Open Interest (All)": 20_000,
         })
 
     return pd.DataFrame(rows)
@@ -74,12 +73,12 @@ def test_filter_erkennt_alle_g7():
 def test_filter_entfernt_nicht_waehrungen():
     raw = make_raw_df()
     result = filter_g7_currencies(raw)
-    assert "WHEAT" not in result["Market_and_Exchange_Names"].str.upper().values
+    assert "WHEAT" not in result["Market and Exchange Names"].str.upper().values
 
 
 def test_filter_fehlende_spalte_wirft_fehler():
     df = pd.DataFrame({"Falsche_Spalte": ["test"]})
-    with pytest.raises(KeyError, match="Market_and_Exchange_Names"):
+    with pytest.raises(KeyError, match="Market and Exchange Names"):
         filter_g7_currencies(df)
 
 
