@@ -24,26 +24,29 @@ logger = logging.getLogger(__name__)
 
 # ── Konstanten ─────────────────────────────────────────────────────────────
 
-G7_CURRENCIES: list[str] = ["USD", "EUR", "GBP", "JPY", "CAD", "CHF", "AUD"]
+G7_CURRENCIES: list[str] = ["USD", "EUR", "GBP", "JPY", "CAD", "CHF", "AUD", "NZD"]
 
 COT_DIR      = Path("data/raw/cot")
 MACRO_DIR    = Path("data/raw/macro")
 CALENDAR_DIR = Path("data/raw/calendar")
 FEATURES_DIR = Path("data/features")
+MARKET_DIR   = Path("data/raw/market")
 
 CB_INFLATION_TARGET = 2.0   # Ziel der meisten Zentralbanken
 
-# Extremwert-Schwellen fuer CoT Kontraindikator (E4)
-COT_EXTREME_HIGH = 90.0
-COT_EXTREME_LOW  = 10.0
+# COT-Index Schwellen fuer E4 Combined Signal
+COT_SIGNAL_HIGH = 80.0   # >80 = klares Signal (bullish Commercial / bearish Small Spec)
+COT_SIGNAL_LOW  = 20.0   # <20 = klares Gegensignal
 
 # Rolling-Fenster in Handelstagen
 WINDOW_3Y   = 756    # ≈ 3 Jahre (252 × 3) — fuer historischen Zinsdurchschnitt
 WINDOW_1Y   = 252    # ≈ 1 Jahr — fuer ESI-Baseline
-WINDOW_3M   = 63     # ≈ 3 Monate — fuer CPI-Trend
-WINDOW_6M   = 126    # ≈ 6 Monate — fuer CPI-Trend
+WINDOW_3M   = 63     # ≈ 3 Monate — fuer CPI-Trend / 1 Quartal GDP
+WINDOW_6M   = 126    # ≈ 6 Monate — fuer CPI-Trend / 2 Quartale GDP
 WINDOW_4W   = 20     # ≈ 4 Wochen — fuer CoT-Trend
 WINDOW_1W   = 5      # ≈ 1 Woche — fuer CoT-Flow-Beschleunigung
+
+FF_LIMIT_GDP = 90    # Quartalsdata: max 90 Tage vorwaerts fuellen
 
 # Forward-Fill-Grenzen (Tage)
 FF_LIMIT_MACRO = 45  # Monatsdaten: max 45 Tage vorwaerts fuellen
@@ -54,6 +57,22 @@ RATE_EVENT_LOOKAHEAD_DAYS = 14
 
 # ESI: Bias-Fenster fuer Kalender-Events
 ESI_BIAS_WINDOW = 90  # Tage
+
+# Rolling-Fenster fuer Markt-Features (Handelstage)
+WINDOW_1M  = 21   # ≈ 1 Monat
+WINDOW_3M_DAYS = 63  # ≈ 3 Monate (Alias fuer Gruppen G/H)
+
+# Publikationslag-Naeherungen (Kalendertage) je Makro-Indikator. FRED liefert den
+# Datenpunkt mit dem Referenzzeitraum-Datum (z.B. GDP Q1 am 2015-01-01), NICHT mit dem
+# tatsaechlichen Veroeffentlichungsdatum. Grobe, literaturuebliche Naeherungen -- kein
+# exakter Vintage-Kalender verfuegbar. Siehe MACRO_ML_SYSTEM_AUDIT.md Abschnitt 1.1 und
+# der isolierte Test in der ehemaligen feature_engineer_macrofix.py-Forschungskopie.
+MACRO_PUBLICATION_LAG_DAYS: dict[str, int] = {
+    "cpi_yoy":       45,   # CPI YoY, monatlich
+    "unemployment":  35,   # Arbeitslosigkeit, monatlich (NZD quartalsweise, Naeherung bleibt gleich)
+    "gdp_qoq":       120,  # GDP QoQ, quartalsweise
+    "interest_rate": 32,   # Zinsen, meist Monatsdurchschnitts-Serien
+}
 
 # ── Laden ──────────────────────────────────────────────────────────────────
 
@@ -81,16 +100,42 @@ def load_macro(indicator: str, data_dir: Path = MACRO_DIR) -> pd.DataFrame:
     return df
 
 
+def load_market(data_dir: Path = MARKET_DIR) -> "pd.DataFrame | None":
+    """Laedt neueste Marktdaten-Parquet (VIX, Oil, Gold …). None wenn nicht vorhanden."""
+    files = sorted(data_dir.glob("market_data_*.parquet"))
+    if not files:
+        logger.warning("Keine Marktdaten in %s — G/H Features werden NaN", data_dir)
+        return None
+    df = pd.read_parquet(files[-1])
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date").sort_index()
+    logger.info("Marktdaten geladen: %s (%d Zeilen, %d Spalten)", files[-1].name, len(df), len(df.columns))
+    return df
+
+
 def load_calendar(data_dir: Path = CALENDAR_DIR) -> pd.DataFrame:
-    try:
-        df = _load_latest("calendar_g7_*.parquet", data_dir)
-        df["date"] = pd.to_datetime(df["date"])
-        return df
-    except FileNotFoundError:
+    """
+    Laedt und konkateniert ALLE monatlichen Backfill-Parquets (calendar_g7_YYYYMM.parquet,
+    6-stelliges Muster). Frueher wurde per _load_latest() nur die eine lexikographisch letzte
+    Datei geladen -- bei monatlich partitionierten Dateien blieb dadurch der komplette
+    historische Backfill wirkungslos (nur der juengste Monat wurde je gesehen).
+    """
+    files = sorted(data_dir.glob("calendar_g7_??????.parquet"))
+    if not files:
         logger.warning("Keine Kalenderdaten gefunden — kalenderbasierte Features werden NaN")
         return pd.DataFrame(
-            columns=["date", "currency", "event_name", "impact", "forecast", "previous"]
+            columns=["date", "currency", "event_name", "impact", "actual", "forecast", "previous"]
         )
+
+    dfs = [pd.read_parquet(f) for f in files]
+    df = pd.concat(dfs, ignore_index=True)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.drop_duplicates(subset=["date", "time", "currency", "event_name"])
+    logger.info(
+        "Kalender geladen: %d Dateien, %d Events (dedupliziert), Zeitraum %s–%s",
+        len(files), len(df), df["date"].min().date(), df["date"].max().date(),
+    )
+    return df
 
 
 # ── Hilfsfunktionen ────────────────────────────────────────────────────────
@@ -131,11 +176,10 @@ def _wide_to_long(wide: pd.DataFrame, col_name: str) -> pd.DataFrame:
     Gibt DataFrame mit Spalten [date, currency, col_name] zurueck.
     """
     g7_cols = [c for c in G7_CURRENCIES if c in wide.columns]
-    long = (
-        wide[g7_cols]
-        .reset_index()
-        .melt(id_vars="date", var_name="currency", value_name=col_name)
-    )
+    reset = wide[g7_cols].reset_index()
+    date_col = reset.columns[0]  # erster Eintrag nach reset_index() ist immer der Index
+    long = reset.melt(id_vars=date_col, var_name="currency", value_name=col_name)
+    long = long.rename(columns={date_col: "date"})
     return long[["date", "currency", col_name]]
 
 
@@ -147,6 +191,10 @@ def _macro_to_daily(
 ) -> pd.DataFrame:
     """
     Pivotiert Langform-Makrodaten auf Tagesfrequenz und forward-filled Luecken.
+
+    Verschiebt das Referenzzeitraum-Datum vor dem Pivotieren um den indikator-spezifischen
+    Publikationslag (MACRO_PUBLICATION_LAG_DAYS), damit kein Look-Ahead-Bias entsteht --
+    analog zum COT-Muster in `_cot_to_daily()` (dort Handelstage, hier Kalendertage).
 
     Rueckgabe: Wide DataFrame (DatetimeIndex "date", Spalten = Waehrungen).
     Bei fehlenden Daten wird ein leeres DataFrame mit NaN-Werten zurueckgegeben.
@@ -162,6 +210,15 @@ def _macro_to_daily(
         empty = pd.DataFrame(np.nan, index=all_dates, columns=G7_CURRENCIES)
         empty.index.name = "date"
         return empty
+
+    lag_days = MACRO_PUBLICATION_LAG_DAYS.get(indicator)
+    if lag_days is not None:
+        subset["date"] = subset["date"] + pd.Timedelta(days=lag_days)
+    else:
+        logger.warning(
+            "Kein Publikationslag fuer Indikator '%s' definiert -- "
+            "Datum bleibt unveraendert (Lookahead-Risiko bestehen)", indicator
+        )
 
     pivoted = subset.pivot_table(
         index="date", columns="currency", values="value", aggfunc="last"
@@ -189,7 +246,12 @@ def _cot_to_daily(
         empty.index.name = "date"
         return empty
 
-    pivoted = cot_df.pivot_table(
+    # CFTC "As of Date" ist Dienstag, aber Veröffentlichung erst Freitag (+3 Werktage).
+    # Wir verschieben das Datum um 3 Werktage damit kein Look-Ahead entsteht.
+    cot_shifted = cot_df.copy()
+    cot_shifted["date"] = cot_shifted["date"] + pd.offsets.BusinessDay(3)
+
+    pivoted = cot_shifted.pivot_table(
         index="date", columns="currency", values=feature, aggfunc="last"
     )
     daily = pivoted.reindex(all_dates).ffill(limit=ff_limit)
@@ -363,15 +425,19 @@ def compute_group_b(
             mask = result["currency"] == currency
             curr_dates = result.loc[mask, "date"]
 
+            # Mehrere CPI-Events am selben Tag (z.B. CPI YoY + Core CPI MoM) →
+            # auf einen Wert pro Tag aggregieren, sonst doppelter Index beim Reindex
+            daily_surprise = curr_ev.groupby("date")["surprise"].mean()
+
             surprise_series = pd.Series(
-                curr_ev["surprise"].values,
-                index=pd.DatetimeIndex(curr_ev["date"].values),
+                daily_surprise.values,
+                index=pd.DatetimeIndex(daily_surprise.index),
                 dtype="float64",
             )
             # Events koennen auf Wochenenden/Feiertagen liegen → dichten Index
             # aufbauen, der beide Datumsreihen abdeckt, dann reindex auf Handelstage
             all_dense = pd.DatetimeIndex(
-                sorted(set(list(curr_dates.values) + list(curr_ev["date"].values)))
+                sorted(set(list(curr_dates.values) + list(surprise_series.index.values)))
             )
             dense = surprise_series.reindex(all_dense).ffill(limit=90)
             reindexed = dense.reindex(curr_dates.values)
@@ -387,43 +453,72 @@ def compute_group_e(
     date_spine: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Berechnet CoT-Features (E1–E4) fuer alle G7-Waehrungen.
+    Berechnet CoT-Features (E1–E3) fuer alle G7-Waehrungen.
 
-    e_cot_net_position    — Non-Comm Long minus Short (E1)
-    e_cot_trend_4w        — Veraenderung der Net Position ueber 4 Wochen (E1)
-    e_cot_long_ratio      — Long-Anteil an Long+Short (E1)
-    e_cot_net_percentile  — 3-Jahres-Perzentil der Net Position (E2)
-    e_cot_weekly_change   — Wochenveraenderung der Net Position (E3)
-    e_cot_flow_acceleration — Beschleunigung des wochentlichen Flows (E3)
-    e_cot_extreme_flag    — Kontraindikator: +1 bei >90%, -1 bei <10% (E4)
+    Commercial (Hedger) — Folge-Signal:
+      e_cot_comm_net      — Commercial Net Position (E1)
+      e_cot_comm_change   — Woechentliche Veraenderung (E1)
+      e_cot_comm_index    — COT-Index 0-100 im 52W-Fenster (E1, E3)
+      e_cot_comm_trend_4w — 4-Wochen-Momentum der Net Position (E1)
+
+    Small Speculator / Non-Reportable — Kontra-Signal:
+      e_cot_small_net      — Small Spec Net Position (E2)
+      e_cot_small_change   — Woechentliche Veraenderung (E2)
+      e_cot_small_index    — COT-Index 0-100 im 52W-Fenster (E2, E3)
+      e_cot_small_trend_4w — 4-Wochen-Momentum der Net Position (E2)
     """
-    net_pos   = _cot_to_daily(cot_df, "net_position",   date_spine)
-    pct       = _cot_to_daily(cot_df, "net_percentile", date_spine)
-    ratio     = _cot_to_daily(cot_df, "long_ratio",     date_spine)
-    net_chg   = _cot_to_daily(cot_df, "net_change",     date_spine)
+    comm_net   = _cot_to_daily(cot_df, "comm_net",    date_spine)
+    comm_chg   = _cot_to_daily(cot_df, "comm_change", date_spine)
+    comm_idx   = _cot_to_daily(cot_df, "comm_index",  date_spine)
+    small_net  = _cot_to_daily(cot_df, "small_net",   date_spine)
+    small_chg  = _cot_to_daily(cot_df, "small_change",date_spine)
+    small_idx  = _cot_to_daily(cot_df, "small_index", date_spine)
 
-    trend_4w  = net_pos - net_pos.shift(WINDOW_4W)
-    accel     = net_chg - net_chg.shift(WINDOW_1W)
+    comm_trend_4w  = comm_net  - comm_net.shift(WINDOW_4W)
+    small_trend_4w = small_net - small_net.shift(WINDOW_4W)
+    divergence     = comm_idx  - small_idx   # E3-Signal: >0 bullish, <0 bearish
+
+    # E4: DXY (USD Index) — Korb-Signal für alle Währungspaare.
+    # DXY comm_index niedrig = Commercials short USD = USD bearish = Fremdwährungen bullish.
+    # Das Signal ist identisch für alle Paare → USD-Spalte auf alle Währungen broadcasten.
+    dxy_cot = cot_df[cot_df["currency"] == "USD"].copy()
+    if not dxy_cot.empty:
+        dxy_spine = build_date_spine(currencies=["USD"], start=str(date_spine["date"].min().date()))
+        dxy_comm_idx  = _cot_to_daily(dxy_cot, "comm_index",  dxy_spine)["USD"]
+        dxy_small_idx = _cot_to_daily(dxy_cot, "small_index", dxy_spine)["USD"]
+        dxy_div       = dxy_comm_idx - dxy_small_idx
+        # Auf alle Währungen broadcasten (jede Währungszeile bekommt denselben DXY-Wert)
+        all_dates = comm_idx.index
+        dxy_comm_wide  = pd.DataFrame(
+            {c: dxy_comm_idx.reindex(all_dates)  for c in G7_CURRENCIES if c != "USD"}
+        )
+        dxy_small_wide = pd.DataFrame(
+            {c: dxy_small_idx.reindex(all_dates) for c in G7_CURRENCIES if c != "USD"}
+        )
+        dxy_div_wide   = pd.DataFrame(
+            {c: dxy_div.reindex(all_dates)       for c in G7_CURRENCIES if c != "USD"}
+        )
+    else:
+        empty = pd.DataFrame(np.nan, index=comm_idx.index,
+                             columns=[c for c in G7_CURRENCIES if c != "USD"])
+        dxy_comm_wide = dxy_small_wide = dxy_div_wide = empty
 
     result = date_spine.copy()
     for wide, name in [
-        (net_pos,  "e_cot_net_position"),
-        (trend_4w, "e_cot_trend_4w"),
-        (ratio,    "e_cot_long_ratio"),
-        (pct,      "e_cot_net_percentile"),
-        (net_chg,  "e_cot_weekly_change"),
-        (accel,    "e_cot_flow_acceleration"),
+        (comm_net,       "e_cot_comm_net"),
+        (comm_chg,       "e_cot_comm_change"),
+        (comm_idx,       "e_cot_comm_index"),
+        (comm_trend_4w,  "e_cot_comm_trend_4w"),
+        (small_net,      "e_cot_small_net"),
+        (small_chg,      "e_cot_small_change"),
+        (small_idx,      "e_cot_small_index"),
+        (small_trend_4w, "e_cot_small_trend_4w"),
+        (divergence,     "e_cot_divergence"),
+        (dxy_comm_wide,  "e_cot_dxy_comm_index"),
+        (dxy_small_wide, "e_cot_dxy_small_index"),
+        (dxy_div_wide,   "e_cot_dxy_divergence"),
     ]:
-        long_df = _wide_to_long(wide, name)
-        result = result.merge(long_df, on=["date", "currency"], how="left")
-
-    # E4: Extremwert-Flag — NaN wenn kein Perzentil verfuegbar
-    pct_col = result["e_cot_net_percentile"]
-    result["e_cot_extreme_flag"] = np.where(
-        pct_col.isna(),   np.nan,
-        np.where(pct_col > COT_EXTREME_HIGH,  1.0,
-        np.where(pct_col < COT_EXTREME_LOW,  -1.0, 0.0)),
-    )
+        result = result.merge(_wide_to_long(wide, name), on=["date", "currency"], how="left")
 
     return result
 
@@ -495,9 +590,13 @@ def compute_group_f(
             mask = result["currency"] == currency
             curr_dates = result.loc[mask, "date"]
 
+            # Mehrere Events am selben Tag → auf einen Wert pro Tag aggregieren,
+            # sonst doppelter Index beim Reindex
+            daily_bias_sign = curr_ev.groupby("date")["bias_sign"].mean()
+
             bias_series = pd.Series(
-                curr_ev["bias_sign"].values,
-                index=pd.DatetimeIndex(curr_ev["date"].values),
+                daily_bias_sign.values,
+                index=pd.DatetimeIndex(daily_bias_sign.index),
                 dtype="float64",
             )
             # Reindex → forward-fill → rolling mean ueber ESI_BIAS_WINDOW Tage
@@ -508,26 +607,281 @@ def compute_group_f(
     return result
 
 
+# ── Gruppe F: Yield Spread (F4) ───────────────────────────────────────────
+
+def compute_group_f_yields(
+    market_df: "pd.DataFrame | None",
+    date_spine: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Berechnet Anleihe-Yield-Features fuer Gruppe F (F4) aus Marktdaten.
+
+    f_yield_10y          — 10-Jahres-Rendite dieser Waehrung
+    f_yield_spread_vs_usd — Rendite-Spread vs. US-10Y (Kapitalfluss-Signal)
+    """
+    result = date_spine.copy()
+
+    if market_df is None:
+        result["f_yield_10y"]          = float("nan")
+        result["f_yield_spread_vs_usd"] = float("nan")
+        return result
+
+    all_dates = pd.DatetimeIndex(sorted(date_spine["date"].unique()))
+
+    # Referenz: US 10Y (taeglich)
+    usd_10y_raw = market_df.get("YIELD_USD", pd.Series(dtype=float))
+    usd_10y = usd_10y_raw.reindex(all_dates).ffill(limit=45)
+
+    yield_frames: dict[str, pd.Series] = {}
+    for currency in G7_CURRENCIES:
+        col = f"YIELD_{currency}"
+        raw = market_df.get(col, pd.Series(dtype=float))
+        yield_frames[currency] = raw.reindex(all_dates).ffill(limit=45)
+
+    wide_yield  = pd.DataFrame(yield_frames, index=all_dates)
+    wide_spread = wide_yield.sub(usd_10y, axis=0)
+
+    for wide, name in [(wide_yield, "f_yield_10y"), (wide_spread, "f_yield_spread_vs_usd")]:
+        long_df = _wide_to_long(wide, name)
+        result = result.merge(long_df, on=["date", "currency"], how="left")
+
+    return result
+
+
+# ── Gruppe G: Risikoumfeld ─────────────────────────────────────────────────
+
+def _reindex_ffill(
+    market_df: "pd.DataFrame",
+    name: str,
+    dates: pd.DatetimeIndex,
+    limit: int = 5,
+) -> pd.Series:
+    """Reindexiert eine Marktdaten-Serie auf einen DatetimeIndex mit forward-fill."""
+    raw = market_df.get(name, pd.Series(dtype=float))
+    return raw.reindex(dates).ffill(limit=limit)
+
+
+def _merge_global_features(
+    result: pd.DataFrame,
+    series_map: list[tuple["pd.Series", str]],
+) -> pd.DataFrame:
+    """Fuegt mehrere datums-indexierte Serien in einem einzigen Merge hinzu."""
+    global_df = pd.DataFrame(
+        {col: s for s, col in series_map},
+    )
+    global_df.index.name = "date"
+    return result.merge(global_df.reset_index(), on="date", how="left")
+
+
+def compute_group_g(
+    market_df: "pd.DataFrame | None",
+    date_spine: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Berechnet Risikoumfeld-Features (G1–G4) fuer alle G7-Waehrungen.
+
+    g_vix_level       — CBOE VIX Niveau (G1)
+    g_vix_trend_1m    — VIX-Veraenderung ueber 1 Monat (G1)
+    g_sp500_return_1m — S&P 500 1-Monats-Rendite (G2)
+    g_sp500_return_3m — S&P 500 3-Monats-Rendite (G2)
+    g_gold_return_1m  — Gold 1-Monats-Rendite (G3)
+    g_gold_level      — Gold-Preis absolut (G3)
+    g_yield_curve_us  — US 10Y minus 2Y Spread (G4)
+    """
+    result = date_spine.copy()
+    g_cols = [
+        "g_vix_level", "g_vix_trend_1m",
+        "g_sp500_return_1m", "g_sp500_return_3m",
+        "g_gold_return_1m", "g_gold_level", "g_yield_curve_us",
+    ]
+    if market_df is None:
+        for col in g_cols:
+            result[col] = float("nan")
+        return result
+
+    all_dates = pd.DatetimeIndex(sorted(date_spine["date"].unique()))
+    vix   = _reindex_ffill(market_df, "VIX",   all_dates)
+    sp500 = _reindex_ffill(market_df, "SP500", all_dates)
+    gold  = _reindex_ffill(market_df, "GOLD",  all_dates)
+    us10y = _reindex_ffill(market_df, "US_10Y", all_dates)
+    us2y  = _reindex_ffill(market_df, "US_2Y",  all_dates)
+
+    return _merge_global_features(result, [
+        (vix,                               "g_vix_level"),
+        (vix - vix.shift(WINDOW_1M),        "g_vix_trend_1m"),
+        (sp500.pct_change(WINDOW_1M)    * 100, "g_sp500_return_1m"),
+        (sp500.pct_change(WINDOW_3M_DAYS) * 100, "g_sp500_return_3m"),
+        (gold.pct_change(WINDOW_1M)     * 100, "g_gold_return_1m"),
+        (gold,                               "g_gold_level"),
+        (us10y - us2y,                       "g_yield_curve_us"),
+    ])
+
+
+# ── Gruppe H: Rohstoffe ────────────────────────────────────────────────────
+
+def compute_group_h(
+    market_df: "pd.DataFrame | None",
+    date_spine: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Berechnet Rohstoff-Features (H1–H3) fuer alle G7-Waehrungen.
+
+    h_oil_level        — WTI Roh-Oel-Preis absolut (H1)
+    h_oil_return_1m    — WTI 1-Monats-Rendite in % (H1)
+    h_oil_return_3m    — WTI 3-Monats-Rendite in % (H1)
+    h_gold_level       — Gold-Preis absolut (H3)
+    h_gold_return_1m   — Gold 1-Monats-Rendite in % (H3)
+    h_copper_level     — Kupfer-Preis absolut (H2)
+    h_copper_return_1m — Kupfer 1-Monats-Rendite in % (H2)
+    """
+    result = date_spine.copy()
+    h_cols = [
+        "h_oil_level", "h_oil_return_1m", "h_oil_return_3m",
+        "h_gold_level", "h_gold_return_1m",
+        "h_copper_level", "h_copper_return_1m",
+    ]
+    if market_df is None:
+        for col in h_cols:
+            result[col] = float("nan")
+        return result
+
+    all_dates = pd.DatetimeIndex(sorted(date_spine["date"].unique()))
+    oil    = _reindex_ffill(market_df, "OIL",    all_dates)
+    gold   = _reindex_ffill(market_df, "GOLD",   all_dates)
+    copper = _reindex_ffill(market_df, "COPPER", all_dates, limit=45)
+
+    return _merge_global_features(result, [
+        (oil,                               "h_oil_level"),
+        (oil.pct_change(WINDOW_1M)    * 100, "h_oil_return_1m"),
+        (oil.pct_change(WINDOW_3M_DAYS) * 100, "h_oil_return_3m"),
+        (gold,                              "h_gold_level"),
+        (gold.pct_change(WINDOW_1M)   * 100, "h_gold_return_1m"),
+        (copper,                            "h_copper_level"),
+        (copper.pct_change(WINDOW_1M) * 100, "h_copper_return_1m"),
+    ])
+
+
+# ── Gruppe C: Arbeitsmarkt ─────────────────────────────────────────────────
+
+def compute_group_c(
+    macro_long: pd.DataFrame,
+    date_spine: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Berechnet Arbeitsmarkt-Features (C1–C4) fuer alle G7-Waehrungen.
+
+    c_unemployment_rate  — aktuelle Arbeitslosenquote (C1)
+    c_unemp_hist_avg_3y  — rollierender 3-Jahres-Durchschnitt (C1)
+    c_unemp_dev_from_avg — Abweichung vom hist. Schnitt (negativ = enger Markt = bullish)
+    c_unemp_vs_usd       — Differenz zur US-Arbeitslosenquote (C3)
+    c_unemp_trend_3m     — 3-Monats-Veraenderung (negativ = Verbesserung = bullish)
+    c_unemp_trend_6m     — 6-Monats-Veraenderung (C2)
+    """
+    unemp    = _macro_to_daily(macro_long, "unemployment", date_spine)
+    hist_avg = unemp.rolling(WINDOW_3Y, min_periods=30).mean()
+    dev      = unemp - hist_avg
+    usd_u    = unemp["USD"] if "USD" in unemp.columns else unemp.mean(axis=1)
+    vs_usd   = unemp.sub(usd_u, axis=0)
+    trend_3m = unemp - unemp.shift(WINDOW_3M)
+    trend_6m = unemp - unemp.shift(WINDOW_6M)
+
+    result = date_spine.copy()
+    for wide, name in [
+        (unemp,    "c_unemployment_rate"),
+        (hist_avg, "c_unemp_hist_avg_3y"),
+        (dev,      "c_unemp_dev_from_avg"),
+        (vs_usd,   "c_unemp_vs_usd"),
+        (trend_3m, "c_unemp_trend_3m"),
+        (trend_6m, "c_unemp_trend_6m"),
+    ]:
+        result = result.merge(_wide_to_long(wide, name), on=["date", "currency"], how="left")
+
+    return result
+
+
+# ── Gruppe D: Wachstum & PMI ───────────────────────────────────────────────
+
+def compute_group_d(
+    macro_long: pd.DataFrame,
+    date_spine: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Berechnet Wachstums-Features (D1–D4) fuer alle G7-Waehrungen.
+
+    d_gdp_qoq           — BIP QoQ Wachstum (quartalsweise, forward-filled 90d)
+    d_gdp_hist_avg_3y   — rollierender 3-Jahres-Durchschnitt (D1)
+    d_gdp_dev_from_avg  — Abweichung vom hist. Schnitt (positiv = ueber Trend = bullish)
+    d_gdp_vs_usd        — Wachstumsdifferenzial vs. USD (D3)
+    d_gdp_trend_2q      — 2-Quartals-Momentum: GDP[t] - GDP[t-2Q] (D2)
+    d_gdp_accel         — Beschleunigung: Differenz der 1-Quartals-Veraenderungen (D4)
+    """
+    gdp      = _macro_to_daily(macro_long, "gdp_qoq", date_spine, ff_limit=FF_LIMIT_GDP)
+    hist_avg = gdp.rolling(WINDOW_3Y, min_periods=8).mean()
+    dev      = gdp - hist_avg
+    usd_g    = gdp["USD"] if "USD" in gdp.columns else gdp.mean(axis=1)
+    vs_usd   = gdp.sub(usd_g, axis=0)
+    trend_2q = gdp - gdp.shift(WINDOW_6M)       # 2 Quartale ≈ 126 Handelstage
+    chg_1q   = gdp - gdp.shift(WINDOW_3M)       # 1 Quartal ≈ 63 Handelstage
+    accel    = chg_1q - chg_1q.shift(WINDOW_3M)
+
+    result = date_spine.copy()
+    for wide, name in [
+        (gdp,      "d_gdp_qoq"),
+        (hist_avg, "d_gdp_hist_avg_3y"),
+        (dev,      "d_gdp_dev_from_avg"),
+        (vs_usd,   "d_gdp_vs_usd"),
+        (trend_2q, "d_gdp_trend_2q"),
+        (accel,    "d_gdp_accel"),
+    ]:
+        result = result.merge(_wide_to_long(wide, name), on=["date", "currency"], how="left")
+
+    return result
+
+
 # ── Zusammenfuehren & Speichern ────────────────────────────────────────────
 
 def merge_all_features(
     group_a: pd.DataFrame,
     group_b: pd.DataFrame,
-    group_e: pd.DataFrame,
-    group_f: pd.DataFrame,
+    group_c: pd.DataFrame | None = None,
+    group_d: pd.DataFrame | None = None,
+    group_e: pd.DataFrame | None = None,
+    group_f: pd.DataFrame | None = None,
+    group_f_yields: pd.DataFrame | None = None,
+    group_g: pd.DataFrame | None = None,
+    group_h: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Fuegt alle Feature-Gruppen zu einem breiten DataFrame zusammen."""
     keys = ["date", "currency"]
 
-    a_cols = [c for c in group_a.columns if c.startswith("a_")]
-    b_cols = [c for c in group_b.columns if c.startswith("b_")]
-    e_cols = [c for c in group_e.columns if c.startswith("e_")]
-    f_cols = [c for c in group_f.columns if c.startswith("f_")]
+    def _select(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
+        cols = [c for c in df.columns if c.startswith(prefix)]
+        return df[keys + cols]
 
-    result = group_a[keys + a_cols].copy()
-    result = result.merge(group_b[keys + b_cols], on=keys, how="left")
-    result = result.merge(group_e[keys + e_cols], on=keys, how="left")
-    result = result.merge(group_f[keys + f_cols], on=keys, how="left")
+    result = _select(group_a, "a_").copy()
+    result = result.merge(_select(group_b, "b_"), on=keys, how="left")
+
+    if group_c is not None:
+        result = result.merge(_select(group_c, "c_"), on=keys, how="left")
+
+    if group_d is not None:
+        result = result.merge(_select(group_d, "d_"), on=keys, how="left")
+
+    if group_e is not None:
+        result = result.merge(_select(group_e, "e_"), on=keys, how="left")
+
+    if group_f is not None:
+        result = result.merge(_select(group_f, "f_"), on=keys, how="left")
+
+    if group_f_yields is not None:
+        fy_cols = [c for c in group_f_yields.columns if c.startswith("f_")]
+        result = result.merge(group_f_yields[keys + fy_cols], on=keys, how="left")
+
+    if group_g is not None:
+        result = result.merge(_select(group_g, "g_"), on=keys, how="left")
+
+    if group_h is not None:
+        result = result.merge(_select(group_h, "h_"), on=keys, how="left")
 
     return result.sort_values(keys).reset_index(drop=True)
 
@@ -551,6 +905,7 @@ def run(
     cot_dir: Path = COT_DIR,
     macro_dir: Path = MACRO_DIR,
     calendar_dir: Path = CALENDAR_DIR,
+    market_dir: Path = MARKET_DIR,
     features_dir: Path = FEATURES_DIR,
     start: str = "2015-01-01",
     end: str | None = None,
@@ -558,8 +913,9 @@ def run(
     """
     Vollstaendige Feature-Engineering-Pipeline.
 
-    Laedt alle Rohdaten, berechnet Features fuer Gruppen A, B, E, F
+    Laedt alle Rohdaten, berechnet Features fuer Gruppen A, B, E, F, G, H
     und speichert als Parquet in features_dir.
+    Marktdaten (G, H) sind optional — fehlende Daten erzeugen NaN-Features.
     """
     logger.info("=== Feature Engineering Pipeline startet ===")
 
@@ -575,7 +931,7 @@ def run(
                       "net_change", "long_ratio", "non_comm_long", "non_comm_short"]
         cot_df = pd.DataFrame(columns=empty_cols)
 
-    # Makro laden (alle 4 Indikatoren zusammen in ein langes DataFrame)
+    # Makro laden
     macro_frames: list[pd.DataFrame] = []
     for indicator in ["interest_rate", "cpi_yoy", "gdp_qoq", "unemployment"]:
         try:
@@ -594,6 +950,9 @@ def run(
     # Kalender laden
     calendar_df = load_calendar(calendar_dir)
 
+    # Marktdaten laden (optional)
+    market_df = load_market(market_dir)
+
     # Datums-Raster aufbauen
     if end is None:
         end = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -607,13 +966,31 @@ def run(
     logger.info("Berechne Gruppe B (Inflation) ...")
     group_b = compute_group_b(macro_long, calendar_df, date_spine)
 
+    logger.info("Berechne Gruppe C (Arbeitsmarkt) ...")
+    group_c = compute_group_c(macro_long, date_spine)
+
+    logger.info("Berechne Gruppe D (Wachstum & PMI) ...")
+    group_d = compute_group_d(macro_long, date_spine)
+
     logger.info("Berechne Gruppe E (CoT-Positionierung) ...")
     group_e = compute_group_e(cot_df, date_spine)
 
     logger.info("Berechne Gruppe F (Economic Surprise Index) ...")
     group_f = compute_group_f(macro_long, calendar_df, date_spine)
 
-    features = merge_all_features(group_a, group_b, group_e, group_f)
+    logger.info("Berechne Gruppe F-Yields (Anleihe-Spreads) ...")
+    group_f_yields = compute_group_f_yields(market_df, date_spine)
+
+    logger.info("Berechne Gruppe G (Risikoumfeld) ...")
+    group_g = compute_group_g(market_df, date_spine)
+
+    logger.info("Berechne Gruppe H (Rohstoffe) ...")
+    group_h = compute_group_h(market_df, date_spine)
+
+    features = merge_all_features(
+        group_a, group_b, group_c, group_d, group_e, group_f,
+        group_f_yields, group_g, group_h,
+    )
     logger.info(
         "Feature-Tabelle: %d Zeilen × %d Spalten (%d Waehrungen)",
         len(features), len(features.columns), features["currency"].nunique(),
