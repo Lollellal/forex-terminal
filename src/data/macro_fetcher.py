@@ -34,36 +34,44 @@ DATA_DIR = Path("data/raw/macro")
 OBSERVATION_START = "2000-01-01"
 
 # FRED Series IDs: Zentralbank-Leitzinsen (monatlich)
+# CHF/AUD: OECD Policy-Rate-Serie (IRSTCB01) nicht verfuegbar → 3-Monats-Interbank als Proxy
 INTEREST_RATE_SERIES: dict[str, str] = {
     "USD": "FEDFUNDS",           # Fed Funds Rate
     "EUR": "ECBDFR",             # ECB Deposit Facility Rate
-    "GBP": "BOERUKM",            # Bank of England Official Bank Rate
+    "GBP": "IR3TIB01GBM156N",    # BoE Proxy: 3M-Interbank GB (BOERUKM eingestellt 2017)
     "JPY": "IRSTCB01JPM156N",    # Bank of Japan Policy Rate (OECD)
     "CAD": "IRSTCB01CAM156N",    # Bank of Canada Overnight Rate (OECD)
-    "CHF": "IRSTCB01CHM156N",    # SNB Policy Rate (OECD)
-    "AUD": "IRSTCB01AUM156N",    # RBA Cash Rate (OECD)
+    "CHF": "IR3TIB01CHM156N",    # SNB Proxy: 3M-Interbank CH (IRSTCB01CHM156N nicht verfuegbar)
+    "AUD": "IR3TIB01AUM156N",    # RBA Proxy: 3M-Interbank AU (IRSTCB01AUM156N nicht verfuegbar)
+    "NZD": "IR3TIB01NZM156N",    # RBNZ Proxy: 3M-Interbank NZ (IRSTCB01NZM156N nicht verfuegbar)
 }
 
 # FRED Series IDs: CPI YoY Inflation (monatlich, % Vorjahresveraenderung)
+# EUR: HICP YoY bis 2023-01 verfuegbar (OECD-Serie eingestellt), danach forward-fill
+# AUD/NZD: nur quartalsweise verfuegbar, wird taeglich forward-gefuellt
 CPI_YOY_SERIES: dict[str, str] = {
     "USD": "CPALTT01USM659N",    # US CPI All Items YoY
-    "EUR": "CPALTT01EZM659N",    # Euro Area HICP YoY
+    "EUR": "CPHPTT01EZM659N",    # Euro Area HICP YoY (bis 2023-01, CPALTT01EZM659N n.v.)
     "GBP": "CPALTT01GBM659N",    # UK CPI YoY
     "JPY": "CPALTT01JPM659N",    # Japan CPI YoY
     "CAD": "CPALTT01CAM659N",    # Canada CPI YoY
     "CHF": "CPALTT01CHM659N",    # Switzerland CPI YoY
-    "AUD": "CPALTT01AUM659N",    # Australia CPI YoY
+    "AUD": "CPALTT01AUQ659N",    # Australia CPI YoY (quartalsweise, CPALTT01AUM659N n.v.)
+    "NZD": "CPALTT01NZQ659N",    # New Zealand CPI YoY (quartalsweise, wie AUD)
 }
 
 # FRED Series IDs: Arbeitslosenquote (monatlich, %)
+# CHF: OECD-Serie LRHUTTTTCHM156S nicht verfuegbar → LMUNRRTTCHM156S als Ersatz
+# NZD: nur quartalsweise verfuegbar (wie AUD CPI), wird forward-gefuellt
 UNEMPLOYMENT_SERIES: dict[str, str] = {
     "USD": "UNRATE",             # US Unemployment Rate
     "EUR": "LRHUTTTTEZM156S",    # Euro Area Unemployment Rate (OECD)
     "GBP": "LRHUTTTTGBM156S",    # UK Unemployment Rate (OECD)
     "JPY": "LRHUTTTTJPM156S",    # Japan Unemployment Rate (OECD)
     "CAD": "LRHUTTTTCAM156S",    # Canada Unemployment Rate (OECD)
-    "CHF": "LRHUTTTTCHM156S",    # Switzerland Unemployment Rate (OECD)
+    "CHF": "LMUNRRTTCHM156S",    # Switzerland Unemployment (LRHUTTTTCHM156S n.v.)
     "AUD": "LRHUTTTTAUM156S",    # Australia Unemployment Rate (OECD)
+    "NZD": "LRUNTTTTNZQ156S",    # New Zealand Unemployment Rate (quartalsweise, OECD)
 }
 
 # FRED Series IDs: BIP QoQ Wachstum (quartalsweise, %)
@@ -76,6 +84,7 @@ GDP_QOQ_SERIES: dict[str, str] = {
     "CAD": "NAEXKP01CAQ657S",    # Canada GDP QoQ (OECD)
     "CHF": "NAEXKP01CHQ657S",    # Switzerland GDP QoQ (OECD)
     "AUD": "NAEXKP01AUQ657S",    # Australia GDP QoQ (OECD)
+    "NZD": "NAEXKP01NZQ657S",    # New Zealand GDP QoQ (OECD)
 }
 
 ALL_INDICATORS: dict[str, dict[str, str]] = {
@@ -85,7 +94,7 @@ ALL_INDICATORS: dict[str, dict[str, str]] = {
     "gdp_qoq": GDP_QOQ_SERIES,
 }
 
-G7_CURRENCIES = {"USD", "EUR", "GBP", "JPY", "CAD", "CHF", "AUD"}
+G7_CURRENCIES = {"USD", "EUR", "GBP", "JPY", "CAD", "CHF", "AUD", "NZD"}
 
 
 # ── API Key ────────────────────────────────────────────────────────────────

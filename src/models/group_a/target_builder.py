@@ -39,14 +39,15 @@ FRED_FX_SERIES: dict[str, tuple[str, int]] = {
     "CAD": ("DEXCAUS", -1),
     "CHF": ("DEXSZUS", -1),
     "AUD": ("DEXUSAL", +1),
+    "NZD": ("DEXNZUS", -1),   # NZD per USD → Indirektnotiz
 }
 
-# 30-Tage Forward-Rendite als Zielvariable
-HORIZON_DAYS = 30
+# Forward-Rendite Horizont (Tage) — 50d ist empirisch optimal (Multi-Horizont-Backtest)
+HORIZON_DAYS = 50
 
 # Schwellenwert fuer Bedeutsamkeit:
 # |rendite| < THRESHOLD → NEUTRAL (0), darueber → BULLISH (+1) oder BEARISH (-1)
-NEUTRAL_THRESHOLD = 0.005   # 0.5 % in 30 Tagen
+NEUTRAL_THRESHOLD = 0.005
 
 
 # ── FRED FX Download ───────────────────────────────────────────────────────
@@ -76,16 +77,34 @@ def _fetch_fred_series(series_id: str, api_key: str, start: str) -> pd.Series:
     return pd.Series(values, index=dates, name=series_id, dtype="float64")
 
 
+# Währungen ohne FRED-Serie: via yfinance laden (NZDUSD=X → NZD/USD Direktkurs)
+YFINANCE_FX_SERIES: dict[str, str] = {
+    "NZD": "NZDUSD=X",   # NZD per USD, Direktnotiz (+1)
+}
+
+
+def _fetch_yfinance_series(ticker: str, start: str) -> pd.Series:
+    """Laedt taeglliche Close-Kurse via yfinance als Date-indexierte Series."""
+    import yfinance as yf
+    raw = yf.download(ticker, start=start, auto_adjust=True, progress=False)
+    if raw.empty:
+        raise RuntimeError(f"Keine yfinance-Daten fuer {ticker}")
+    close = raw["Close"].squeeze().dropna()
+    close.index = pd.to_datetime(close.index).tz_localize(None)
+    close.index.name = "date"
+    return close.rename(ticker)
+
+
 def fetch_fx_rates(
     start: str = "2000-01-01",
     api_key: str | None = None,
 ) -> pd.DataFrame:
     """
-    Laedt taeglliche FX-Kurse von FRED fuer alle G7-Waehrungen (ausser USD).
+    Laedt taeglliche FX-Kurse fuer alle G7+NZD-Waehrungen (ausser USD).
+    FRED fuer G7, yfinance als Fallback fuer Waehrungen ohne FRED-Serie (NZD).
 
     Rueckgabe: Wide DataFrame (DatetimeIndex, Spalten = Waehrungscodes).
-    Alle Serien werden auf USD-Staerke normiert:
-      positiver Wert = Waehrung staerker als USD-Baseline.
+    Alle Serien normiert: hoeher = Waehrung staerker als USD.
     """
     if api_key is None:
         api_key = _get_api_key()
@@ -94,15 +113,21 @@ def fetch_fx_rates(
     for currency, (series_id, direction) in FRED_FX_SERIES.items():
         try:
             raw = _fetch_fred_series(series_id, api_key, start)
-            # direction=+1: direkter Return (hoeher = staerkere Waehrung)
-            # direction=-1: invertiert (hoeher FRED-Wert = schwaechere Waehrung)
             frames[currency] = raw if direction == +1 else (1.0 / raw)
-            logger.info("FX geladen: %s (%d Datenpunkte)", currency, raw.notna().sum())
+            logger.info("FX geladen (FRED): %s (%d Datenpunkte)", currency, raw.notna().sum())
         except Exception as exc:
             logger.warning("FX-Fehler %s (%s): %s", currency, series_id, exc)
 
+    for currency, ticker in YFINANCE_FX_SERIES.items():
+        try:
+            raw = _fetch_yfinance_series(ticker, start)
+            frames[currency] = raw
+            logger.info("FX geladen (yfinance): %s (%d Datenpunkte)", currency, raw.notna().sum())
+        except Exception as exc:
+            logger.warning("FX-Fehler %s (%s): %s", currency, ticker, exc)
+
     if not frames:
-        raise RuntimeError("Keine FX-Kurse geladen — alle FRED-Abfragen fehlgeschlagen.")
+        raise RuntimeError("Keine FX-Kurse geladen — alle Abfragen fehlgeschlagen.")
 
     df = pd.DataFrame(frames)
     df.index.name = "date"
@@ -119,6 +144,16 @@ def save_fx_to_parquet(fx_wide: pd.DataFrame, out_dir: Path = FX_DATA_DIR) -> Pa
 
 
 # ── Target-Konstruktion ────────────────────────────────────────────────────
+
+def _add_usd_composite(returns: pd.DataFrame) -> pd.DataFrame:
+    """Fügt synthetischen USD-Return hinzu (negatives Mittel der anderen G7)."""
+    if "USD" not in returns.columns:
+        others = [c for c in returns.columns if c != "USD"]
+        if others:
+            returns = returns.copy()
+            returns["USD"] = -returns[others].mean(axis=1)
+    return returns
+
 
 def build_targets(
     fx_wide: pd.DataFrame,
@@ -145,13 +180,7 @@ def build_targets(
     fx_clean = fx_wide.copy()
     fx_clean = fx_clean.ffill(limit=5)           # FRED hat Luecken (Feiertage)
 
-    returns = fx_clean.shift(-horizon_days) / fx_clean - 1.0
-
-    # USD: negatives Mittel der anderen G7-Returns (DXY-Basket-Proxy)
-    if "USD" not in returns.columns:
-        available_others = [c for c in returns.columns if c != "USD"]
-        if available_others:
-            returns["USD"] = -returns[available_others].mean(axis=1)
+    returns = _add_usd_composite(fx_clean.shift(-horizon_days) / fx_clean - 1.0)
 
     # Labels
     labels = np.select(
@@ -162,26 +191,80 @@ def build_targets(
     labels_df = pd.DataFrame(labels, index=returns.index, columns=returns.columns)
 
     # Long-Format zusammenbauen
+    ret_col = f"fx_return_{horizon_days}d"
+    tgt_col = f"target_{horizon_days}d"
+
     records: list[pd.DataFrame] = []
     for currency in returns.columns:
         tmp = pd.DataFrame({
-            "date":        returns.index,
-            "currency":    currency,
-            "fx_return_30d": returns[currency].values,
-            "target_30d":   labels_df[currency].values,
+            "date":     returns.index,
+            "currency": currency,
+            ret_col:    returns[currency].values,
+            tgt_col:    labels_df[currency].values,
         })
         records.append(tmp)
 
     result = pd.concat(records, ignore_index=True)
-    result = result.dropna(subset=["fx_return_30d"])
-    result["target_30d"] = result["target_30d"].astype(int)
+    result = result.dropna(subset=[ret_col])
+    result[tgt_col] = result[tgt_col].astype(int)
     result = result.sort_values(["date", "currency"]).reset_index(drop=True)
 
     n_total = len(result)
     for label, name in [(1, "BULLISH"), (0, "NEUTRAL"), (-1, "BEARISH")]:
-        n = (result["target_30d"] == label).sum()
+        n = (result[tgt_col] == label).sum()
         logger.info("Klassen-Verteilung %s: %d (%.1f%%)", name, n, 100 * n / n_total)
 
+    return result
+
+
+def build_targets_multi(
+    fx_wide: pd.DataFrame,
+    horizons: tuple[int, ...] = (10, 30, 50),
+    threshold: float = NEUTRAL_THRESHOLD,
+) -> pd.DataFrame:
+    """
+    Berechnet Forward-Renditen und Labels fuer mehrere Horizonte gleichzeitig.
+
+    Rueckgabe: Long DataFrame mit Spalten:
+      date, currency,
+      fx_return_10d, target_10d,
+      fx_return_30d, target_30d,
+      fx_return_50d, target_50d
+    """
+    fx_clean = fx_wide.copy().ffill(limit=5)
+
+    horizon_dfs: list[pd.DataFrame] = []
+    for h in horizons:
+        returns = _add_usd_composite(fx_clean.shift(-h) / fx_clean - 1.0)
+
+        labels = np.select(
+            [returns > threshold, returns < -threshold],
+            [1, -1],
+            default=0,
+        )
+        labels_df = pd.DataFrame(labels, index=returns.index, columns=returns.columns)
+
+        records: list[pd.DataFrame] = []
+        for currency in returns.columns:
+            records.append(pd.DataFrame({
+                "date":               returns.index,
+                "currency":           currency,
+                f"fx_return_{h}d":    returns[currency].values,
+                f"target_{h}d":       labels_df[currency].values,
+            }))
+        h_df = (
+            pd.concat(records, ignore_index=True)
+            .dropna(subset=[f"fx_return_{h}d"])
+        )
+        h_df[f"target_{h}d"] = h_df[f"target_{h}d"].astype(int)
+        horizon_dfs.append(h_df)
+
+    # Merge alle Horizonte auf date × currency
+    result = horizon_dfs[0]
+    for h_df in horizon_dfs[1:]:
+        result = result.merge(h_df, on=["date", "currency"], how="outer")
+
+    result = result.sort_values(["date", "currency"]).reset_index(drop=True)
     return result
 
 
