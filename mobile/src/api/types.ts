@@ -55,6 +55,15 @@ export interface SignalSnapshot {
   primary_drivers: string[] | null;
   weekly_report_id: string | null;
   report_week: string | null;
+  // Timeline + Makro-Begruendung, siehe src/trade_snapshot.py::build_trade_context()
+  be_date: string | null;
+  close_date: string | null;
+  be_trading_days: number | null;
+  max_hold_trading_days: number | null;
+  why_base_ccy: string | null;
+  why_base_section: string | null;
+  why_quote_ccy: string | null;
+  why_quote_section: string | null;
 }
 
 export interface AllocationOverviewResponse {

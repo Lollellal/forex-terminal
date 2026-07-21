@@ -57,11 +57,13 @@ from backend.infrastructure.db import get_engine
 from backend.infrastructure.event_store import EventStore
 from backend.infrastructure.projections import ProjectionRunner
 from backend.infrastructure.storage import WeeklyReportStorage
-from src.trade_snapshot import build_signal_snapshot, resolve_weekly_report, with_weekly_report
+from src.trade_snapshot import (
+    build_signal_snapshot, build_trade_context, resolve_weekly_report, with_weekly_report,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EMPIRE_PATH = PROJECT_ROOT / "data" / "empire.json"
-SIGNAL_JOURNAL_PATH = PROJECT_ROOT / "data" / "signal_journal.json"
+JOURNAL_PATH = PROJECT_ROOT / "data" / "journal.json"
 TERMINAL_DATA_PATH = PROJECT_ROOT / "terminal_data.json"
 REPORTS_DIR = PROJECT_ROOT / "Research weekly reports"
 REPORTS_MD_DIR = PROJECT_ROOT / "reports"
@@ -74,8 +76,13 @@ REAL_USER_ID = uuid.UUID("28182fce-d78e-4585-b6be-a33914f7271c")
 
 _DIRECTION_MAP = {"long": "LONG", "short": "SHORT"}
 _REPORT_FILENAME_RE = re.compile(r"^weekly_(\d{4})_W(\d{2})$")
+# Matcht den Inhalt unter der ERSTEN "## 1. <Titel>"-Ueberschrift, unabhaengig
+# vom genauen Titeltext (bewusst NICHT mehr "Executive Summary" hart codiert --
+# das Report-Template nennt diesen Abschnitt "Die Geschichte dieser Woche",
+# der alte woertliche Match traf seit der Umbenennung nie mehr, siehe
+# 2026-07-21 Vorfall: summary wurde bei jedem Publish stillschweigend None).
 _EXEC_SUMMARY_RE = re.compile(
-    r"##\s*1\.\s*Executive Summary\s*\n+(.*?)(?:\n---|\n##\s|\Z)", re.DOTALL
+    r"##\s*1\.[^\n]*\n+(.*?)(?:\n---|\n##\s|\Z)", re.DOTALL
 )
 
 
@@ -117,7 +124,7 @@ def _extract_executive_summary(md_path: Path) -> str | None:
 
 def publish() -> None:
     empire = _load_json(EMPIRE_PATH)
-    signals_by_id = {s["id"]: s for s in _load_json(SIGNAL_JOURNAL_PATH)}
+    journal_entries = _load_json(JOURNAL_PATH) if JOURNAL_PATH.exists() else []
     terminal_data = _load_json(TERMINAL_DATA_PATH) if TERMINAL_DATA_PATH.exists() else {}
     mapping = _load_mapping()
 
@@ -162,11 +169,10 @@ def publish() -> None:
             allocation_repo=allocation_repo,
             account_service=account_service,
             mapping=mapping,
-            legacy_allocations=[
-                a for a in empire["allocations"] if a["account_id"] == legacy_account_id
+            legacy_entries=[
+                e for e in journal_entries if e.get("account_id") == legacy_account_id
             ],
             backend_account_id=account_id,
-            signals_by_id=signals_by_id,
             terminal_data=terminal_data,
             known_reports=known_reports,
         )
@@ -248,51 +254,74 @@ def _publish_allocations(
     allocation_repo: AllocationRepository,
     account_service: AccountService,
     mapping: dict,
-    legacy_allocations: list[dict],
+    legacy_entries: list[dict],
     backend_account_id: uuid.UUID,
-    signals_by_id: dict,
     terminal_data: dict,
     known_reports: list[dict],
 ) -> None:
-    ordered = sorted(legacy_allocations, key=lambda a: _parse_dt(a["created_at"]))
+    """Quelle: data/journal.json (das neue, eigenstaendige Live-Journal nach
+    der Terminal-Bereinigung 2026-07 -- ersetzt das entfernte
+    empire.json['allocations']+signal_journal.json-Paar, das dieses Skript
+    zuvor las). Ein Journal-Eintrag traegt Account+risk_pct erst ab dem
+    Schliessen (siehe terminal_server.py::api_journal_close) -- ein noch
+    offener, unzugeordneter Eintrag hat also zwangslaeufig account_id=None
+    und wird hier (per Filter in publish()) noch gar nicht erreicht. Das ist
+    kein Bug, sondern spiegelt exakt den Terminal-eigenen Zustand wider:
+    solange nicht klar ist, welchem Konto/Risiko ein offener Trade zugeordnet
+    ist, kann er nicht sinnvoll als Allocation im Backend angelegt werden."""
+    ordered = sorted(legacy_entries, key=lambda e: _parse_dt(e["created_at"]))
 
-    for legacy_alloc in ordered:
-        legacy_id = legacy_alloc["id"]
-        signal = signals_by_id.get(legacy_alloc["signal_id"])
-        if signal is None:
-            print(f"Allocation {legacy_id}: Signal {legacy_alloc['signal_id']} nicht gefunden, übersprungen")
+    for entry in ordered:
+        legacy_id = entry["id"]
+
+        if entry.get("risk_pct") is None:
+            print(f"Journal-Eintrag {legacy_id} ({entry['pair']}): kein risk_pct gesetzt, übersprungen")
             continue
 
-        direction = _DIRECTION_MAP[signal["direction"].lower()]
-        pair = signal["pair"]
-        planned_risk_pct = Decimal(str(legacy_alloc["risk_pct"]))
-        created_at = _parse_dt(legacy_alloc["created_at"])
+        direction = _DIRECTION_MAP[entry["direction"].lower()]
+        pair = entry["pair"]
+        planned_risk_pct = Decimal(str(entry["risk_pct"]))
+        created_at = _parse_dt(entry["created_at"])
 
         with conn_factory.begin() as conn:
             if legacy_id in mapping["allocations"]:
-                allocation_id = uuid.UUID(mapping["allocations"][legacy_id])
-                current = allocation_repo.load(conn, allocation_id)
-            else:
-                snapshot = build_signal_snapshot(signal, terminal_data)
-                report_id, report_week = resolve_weekly_report(
-                    date.fromisoformat(signal["date"]), known_reports
-                )
-                snapshot = with_weekly_report(snapshot, report_id, report_week)
-                created = lifecycle_service.create(
-                    conn,
-                    CreateAllocationCommand(
-                        account_id=backend_account_id,
-                        pair=pair,
-                        direction=direction,
-                        planned_risk_pct=planned_risk_pct,
-                        signal_snapshot=snapshot,
-                        source="system",
-                    ),
-                )
-                allocation_id = created.id
-                mapping["allocations"][legacy_id] = str(allocation_id)
-                _save_mapping(mapping)
-                current = created
+                # Bereits migriert: der Live-Status dieser Allocation wird ab
+                # jetzt ausschließlich über Mobile/API gepflegt (Confirm/Open/
+                # Close). Ein erneuter Lauf darf sie nicht mehr anfassen, sonst
+                # wuerde ein spaeteres automatisches Signal-Journal-Settlement
+                # (Freitags-Job, siehe api_signal_journal_settle) faelschlich
+                # als Close einer echten, noch offenen Live-Allocation
+                # interpretiert (siehe 2026-07-06 Vorfall: GBPNZD/USDCHF
+                # wurden so faelschlich geschlossen).
+                print(f"Allocation {legacy_id} bereits migriert -> {mapping['allocations'][legacy_id]}, übersprungen")
+                continue
+
+            entry_date = date.fromisoformat(entry["date"])
+            snapshot = build_signal_snapshot(entry, terminal_data)
+            report_id, report_week = resolve_weekly_report(entry_date, known_reports)
+            snapshot = with_weekly_report(snapshot, report_id, report_week)
+
+            iso = entry_date.isocalendar()
+            local_report_md = REPORTS_MD_DIR / f"weekly_{iso.year}_W{iso.week:02d}.md"
+            snapshot = {
+                **snapshot,
+                **build_trade_context(pair, entry_date, local_report_md if local_report_md.exists() else None),
+            }
+            created = lifecycle_service.create(
+                conn,
+                CreateAllocationCommand(
+                    account_id=backend_account_id,
+                    pair=pair,
+                    direction=direction,
+                    planned_risk_pct=planned_risk_pct,
+                    signal_snapshot=snapshot,
+                    source="system",
+                ),
+            )
+            allocation_id = created.id
+            mapping["allocations"][legacy_id] = str(allocation_id)
+            _save_mapping(mapping)
+            current = created
 
             if current.status == "CREATED":
                 current = lifecycle_service.confirm(
@@ -305,19 +334,19 @@ def _publish_allocations(
                         allocation_id=allocation_id, opened_at=created_at, source="system"
                     ),
                 )
-            if current.status == "OPEN" and signal["status"] in ("WIN", "LOSS"):
-                if signal["status"] == "WIN":
-                    realized_r = Decimal(str(signal["return_pct"]))
-                else:
-                    # Legacy-System zieht bei LOSS immer den vollen Risikobetrag ab,
-                    # unabhängig vom gespeicherten return_pct (siehe
-                    # compute_account_stats in src/empire.py) — realized_r = -1R.
+            if current.status == "OPEN" and entry["status"] == "CLOSED":
+                # realized_r direkt aus dem Journal-Ergebnis (siehe
+                # api_journal_close: WIN -> rr, LOSS -> immer -1R (voller
+                # Risikobetrag, unabhaengig vom Einzeltrade), BE -> 0 --
+                # identische Konvention wie zuvor bei signal_journal.json.
+                if entry["result"] == "WIN" and entry.get("rr") is not None:
+                    realized_r = Decimal(str(entry["rr"]))
+                elif entry["result"] == "LOSS":
                     realized_r = Decimal("-1")
-                # Legacy-Daten kennen den konkreten Exit-Mechanismus (SL/TP/Zeit)
-                # nicht — MANUAL ist ehrlicher als ein geratener Wert.
+                else:
+                    realized_r = Decimal("0")
                 close_reason = "MANUAL"
-                settled_at = signal.get("settled_at")
-                closed_at = _parse_dt(settled_at) if settled_at else created_at
+                closed_at = _parse_dt(entry["closed_at"]) if entry.get("closed_at") else created_at
                 current = lifecycle_service.close(
                     conn,
                     CloseAllocationCommand(
@@ -330,7 +359,7 @@ def _publish_allocations(
                 )
                 account_service.recompute_from_closed_allocations(conn, backend_account_id)
 
-        print(f"Allocation {legacy_id} ({pair} {direction}) -> {allocation_id}: Status {current.status}")
+        print(f"Journal-Eintrag {legacy_id} ({pair} {direction}) -> {allocation_id}: Status {current.status}")
 
 
 if __name__ == "__main__":

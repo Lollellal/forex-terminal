@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Screen } from "../components/Screen";
 import { Card } from "../components/Card";
 import { Pill, directionTone, statusTone } from "../components/Pill";
+import { TimelineBar } from "../components/TradeTimeline";
 import { EmptyState, ErrorState, SkeletonList } from "../components/States";
 import { useActiveTrades, useJournal } from "../api/hooks";
 
@@ -55,6 +56,16 @@ export function ActiveTrades() {
                       <Quote size={14} strokeWidth={1.75} className="mt-0.5 shrink-0" />
                       {why}
                     </p>
+                  )}
+                  {trade.opened_at && trade.signal_snapshot?.be_date && trade.signal_snapshot?.close_date && (
+                    <TimelineBar
+                      compact
+                      openedAt={trade.opened_at}
+                      beDate={trade.signal_snapshot.be_date}
+                      closeDate={trade.signal_snapshot.close_date}
+                      maxHoldDays={trade.signal_snapshot.max_hold_trading_days ?? 15}
+                      beDays={trade.signal_snapshot.be_trading_days ?? 5}
+                    />
                   )}
                 </Card>
               </Link>

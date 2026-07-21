@@ -5,6 +5,7 @@ import { Screen } from "../components/Screen";
 import { Card } from "../components/Card";
 import { Pill, directionTone, statusTone } from "../components/Pill";
 import { JournalCard } from "../components/JournalCard";
+import { TimelineBar, WhyCard } from "../components/TradeTimeline";
 import { ErrorState, SkeletonCard } from "../components/States";
 import { useAllocationDetail, useJournalEntry } from "../api/hooks";
 import { get } from "../api/client";
@@ -118,6 +119,18 @@ export function TradeDetail() {
             </div>
           </div>
         </Card>
+
+        {trade.status !== "CLOSED" && trade.opened_at && snapshot?.be_date && snapshot?.close_date && (
+          <TimelineBar
+            openedAt={trade.opened_at}
+            beDate={snapshot.be_date}
+            closeDate={snapshot.close_date}
+            maxHoldDays={snapshot.max_hold_trading_days ?? 15}
+            beDays={snapshot.be_trading_days ?? 5}
+          />
+        )}
+
+        {snapshot && <WhyCard snapshot={snapshot} />}
 
         <Card className="animate-in">
           <p className="mb-1 text-sm font-semibold text-ink-soft">Signal-Kontext</p>
